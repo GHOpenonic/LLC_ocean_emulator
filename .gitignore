@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Dask / temp
+dask-worker-space/
+*.zarr/
+
+# Logs / outputs
+logs/
+*.out
+
+# Large binary files
+*.nc
+*.h5
+*.pt
+
+# OS
+.DS_Store
+
