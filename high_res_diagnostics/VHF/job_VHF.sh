@@ -3,7 +3,7 @@
 #SBATCH --job-name=VHF
 #SBATCH -N 1
 #SBATCH --ntasks-per-node=1
-#SBATCH --mem=900GB
+#SBATCH --mem=500GB
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=18
 #SBATCH --time=03-12:00:00
@@ -19,6 +19,6 @@ uv sync --dev
 
 echo "======== calculate VHF of a spatiotemporal subset of the LLC4320 dataset ========"
 
-uv run /home/codycruz/high_res_diagnostics/VHF/VHF.py
+uv run /home/codycruz/LLC_ocean_emulator/high_res_diagnostics/VHF/VHF.py
 
 echo "======== job complete ========"
