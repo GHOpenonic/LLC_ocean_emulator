@@ -1,27 +1,26 @@
 """
-This script calculates the vertical heat flux (VHF) in low-frequency (LF),
-high-frequency (HF), and total (LF + HF) components, then produces a time
-series figure of these VHF components. These calculations are performed
-in a specified spatial box in the LLC4320 dataset. The methods are as follows:
+This script calculates the vertical heat flux (VHF) through a layer of water 
+in low-frequency (LF), high-frequency (HF), and total (LF + HF) components, 
+then produces a time series figure of these VHF components. These calculations 
+are performed in a specified spatial box in the LLC4320 dataset. 
+The methods are as follows:
 
-1. define W (vertical velocity) and T (Theta, potential temperature) within a 1 deg x 1 deg box centered at 39N, 158E in the LLC4320 dataset. Split into 4 n deg x n deg sub-boxes.
-2. interpolate W using grid_3d.interp along the z axis. This is necessary as Theta values are spatially centered within LLC pixels while W (vertical velocity) values are horizontally centered, but vertically shifted to the edges of LLC pixels.
-3. calculate W and T spatial means in each n deg x n deg box for each hourly time t
-4. calculate W' and T' by subtracting the box spatial mean from each within-box pixel's W and T value along time (so each time has a W' and T') 
-5. calculate the LF+HF VHF with $C_p \rho W' T'$ for each time t 
-6. calculate the LF VHF with $C_p \rho <W' T'>$ for each time t where <> denotes taking the time average of each W' and T' set to 1 day averages
-$<W' T'> = \bar{WT} - \bar{W} \bar{T}$ 
-7. calculate the HF VHF by subtracting LF from LF + HF: $HF = (LF + HF) - LF = C_p \rho W' T' - C_p \rho <W' T'>$ at each time step t (hourly).
-8. calculate the LF, HF, and total VHF mean across all i,j for each time to produce a time series, weighting by cell surface areas
+0. Import dependencies, define helper functions
+1. Initialize dask
+2. Set params
+3. Open and subset LLC4320
+4. vertical velocity interpolation w/ grid_3d.interp, This is necessary as Theta values are spatially centered within LLC pixels while W (vertical velocity) values are horizontally centered, but vertically shifted to the edges of LLC pixels. 
+5. Box subsetting, coarse grain spatially by box
+6. calculate the total VHF with $C_p \rho <W'T'>$ for each time t, where <W'T'> = bar(WT) - bar(W) bar(T)
+7. take the temporal fourier transform of <W'T'>
+8. define LF and HF by respectively applying a low and high pass filter to <W'T'> using a mask and inverse fourier transform back into time space
+9. define LF and HF VHF respectively with $C_p \rho W_{lowpass} T_{lowpass}$ and $C_p \rho W_{highpass} T_{highpass}$
+10. Compute plotting reqs before figure production
+11. Produce figure
 """
 
-
-
 """
-Notes, 12/8/25
-define  W'T'_{total} same as LF method without daily averaging. New LF and HF: 
-define W', T' with coarse graining.
-define HF, LF w/ fourier transform as high pass, low pass filter, daily as cutoff. 
+0. Import dependencies, define helper functions
 """
 
 import xarray as xr
@@ -44,16 +43,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# define functions!
-
-# function to get lat/lon vals from i, j indices
-def lat_lon_from_i_j(LLC):
-    lats = []
-    lons = []
-    lats.append(LLC['YC'][0,:].values)
-    lons.append(LLC['XC'][:,0].values)
-
-    return lats, lons
+# define functions
 
 # function to select i-j slices per box by lat/lon boxes
 def i_j_slices(LLC, spacing):
@@ -89,20 +79,6 @@ def i_j_slices(LLC, spacing):
     return i_start[::-1], i_end[::-1], j_start, j_end, int(num_boxes)
 
 
-# function to iterate through boxes in space and time, applying some f
-#def box_means(LLC, var, box_width):
-#    i_start, i_end, j_start, j_end, num_boxes = i_j_slices(LLC, box_width)
-#    vals = []
-#    for i0, i1 in zip(i_start, i_end):
-#        for j0, j1 in zip(j_start, j_end):
-#            vals.append(
-#                LLC[var]
-#                .isel(i=slice(i0, i1), j=slice(j0, j1))
-#                .mean(dim=['i', 'j']))
-
-#    LLC[f'{var}_means'] = xr.concat(vals, dim='box')
-#    return LLC
-
 def iterate_boxes(LLC, box_width):
 
     i_start, i_end, j_start, j_end, num_boxes = i_j_slices(LLC, box_width)
@@ -123,65 +99,18 @@ def build_box_index(LLC, box_width):
         box[j0:j1, i0:i1] = box_id
     return box
 
-def calc_deviances(LLC, var, box_index):
-    valid = box_index.where(box_index != -1)
-    valid = valid.rename("box_id")
-
-    # rename means to match groupby dimension names
-    means = LLC[var].groupby(valid).mean().rename("means")
-
-    # subtract box means from each cell
-    anomalies = LLC[var].groupby(valid) - means
-
-    LLC[f"{var}_prime"] = anomalies
-    return LLC
-
-# define function to calculate LF components
-#def calc_LF(LLC, LF_average, box_width, box_index):
-#    # compute WT, W< T box means hourly
-#    i_start, i_end, j_start, j_end, num_boxes = i_j_slices(LLC, box_width)
-#    WT_list = []
-#    W_list = []
-#    T_list = []
-
-#    for i0, i1 in zip(i_start, i_end):
-#        for j0, j1 in zip(j_start, j_end):
-
-#            W_box = LLC["W40"].isel(i=slice(i0, i1), j = slice(j0, j1))
-#            T_box = LLC["T40"].isel(i=slice(i0, i1), j = slice(j0, j1))
-
-#            WT_box_mean = (W_box * T_box).mean(dim = ["i", "j"])
-#            W_box_mean  =  W_box.mean(dim = ["i", "j"])
-#            T_box_mean  =  T_box.mean(dim = ["i", "j"])
-
-#            WT_list.append(WT_box_mean)
-#            W_list.append(W_box_mean)
-#            T_list.append(T_box_mean)
-
-    # stack into shape (box, time)
-#    WT = xr.concat(WT_list, dim = "box")
-#    Wm = xr.concat(W_list,  dim = "box")
-#    Tm = xr.concat(T_list,  dim = "box")
-
-    # coarsen in time for LF average
-#   WT_LF = WT.coarsen(time = LF_average, boundary="trim").mean()
-#    Wm_LF = Wm.coarsen(time = LF_average, boundary="trim").mean()
-#    Tm_LF = Tm.coarsen(time = LF_average, boundary="trim").mean()
-
-    # calc covariance
-#    LF_cov = WT_LF - (Wm_LF * Tm_LF)
-
-#    LF_cov.name = "Wprime_Tprime_LF"
-
-#    return LF_cov
 
 def main():
     logger.info('Initializing Dask')
 
+    """
+    1. Initialize dask
+    """
+
     cluster = LocalCluster( # n_workers * threads_per_workers should be <= cpus requested in slurm job
     n_workers=3,
     threads_per_worker=5,
-    memory_limit='250GB', # memory_limit * n_workers should be ~85% or sth of --mem in slurm job ------- 
+    memory_limit='100GB',#'250GB', # memory_limit * n_workers should be ~85% or sth of --mem in slurm job ------- 
     dashboard_address=None#, 
     # local_directory="/scratch/codycruz/dask_tmp" 
     ) 
@@ -189,7 +118,7 @@ def main():
     logger.info(client)
 
     """
-    Set params
+    2. Set params
     """
     logger.info('Set params')
 
@@ -206,8 +135,8 @@ def main():
     j_1 = 795
 
     # temporal extent of the calculation/time series
-    t_0 = 0
-    t_1 = 429 * 24
+    t_0 = 4000 #0
+    t_1 = t_0 +  24 * 4 * 4#429 * 24
 
     # LF average: define the number of hours to be averaged
     LF_average = 24
@@ -215,119 +144,138 @@ def main():
     # define seawater heat capacity and density
     C_p, rho = 3900, 1025
 
+    logger.info('Prescribing calculations')
+
     """
-    Prescribe calculations, should be lazy until persist later
+    3. open and subset LLC4320
     """
-    logger.info('Prescribe calculations')
 
     # open LLC4320
     LLC_full = xr.open_zarr('/orcd/data/abodner/003/LLC4320/LLC4320',consolidated=False)
 
-    # select large i,j spatial box, face 7
-    LLC_sub = LLC_full.isel(i = slice(i_0, i_1), j = slice(j_0, j_1), face = 7)
+    # select [i,j] spatial box, face 7, temporal subset, chunk
+    LLC_sub = LLC_full.isel(time = slice(t_0,t_1), i = slice(i_0, i_1), j = slice(j_0, j_1), face = 7).chunk({'time': LF_average * 4, 'i': i_1 - i_0, 'j': j_1 - j_0})
 
-    # select temporal subset, chunk in LF_average time and the whole i,j box, select subset of k around k=14=40m for interpolation
-    LLC_sub = LLC_sub.isel(time = slice(t_0,t_1), k = slice(depth_ind-1, depth_ind+1)).chunk({'time': LF_average * 10, 'i': i_1 - i_0, 'j': j_1 - j_0})
 
-    # define and interpolate vertical velocity
+    """
+    4. vertical velocity interpolation
+    """
+
+    # define and interpolate vertical velocity, operate on all k to correctly weight adjacent faces (xgcm needs full vertical grid information)
     grid_3d = xgcm.Grid(
         LLC_sub,
         coords={
             'Z': {'center': 'k', 'left': 'k_p1'}},
+        metrics={'Z': ['drF']},
         autoparse_metadata=False)
 
     # define vertical velocity
-    LLC_sub['W40'] = grid_3d.interp(LLC_sub['W'], 'Z', boundary='extend')
-
-    # define potential temp
-    LLC_sub['T40'] = LLC_sub['Theta']
+    LLC_sub['W_interp'] = grid_3d.interp(LLC_sub['W'], 'Z', boundary='extend')
 
     # select depth
-    LLC_sub = LLC_sub.isel(k=1) # we already subset to a slice +/- depth_ind, so we have k = 0,1,2 to select from, k=1 corresponds to depth_ind
+    LLC_sub = LLC_sub.isel(k=14)
 
     # subset to only relevant vars
-    LLC_sub = LLC_sub[['W40','T40','XC','YC','rA']]
+    LLC_sub = LLC_sub[['W_interp','Theta','XC','YC', 'rA']]
 
-    # build box index
+    # build, assign box index
     box_index = build_box_index(LLC_sub, box_width).compute()
+    LLC_sub = LLC_sub.assign_coords(box=box_index)
 
-    # calculate means
-    #LLC_sub = LLC_sub['W40'].groupby(box_index).mean()
-    #LLC_sub = LLC_sub['T40'].groupby(box_index).mean()
-
-    # calculate deviances from the means
-    LLC_sub = calc_deviances(LLC_sub, 'W40', box_index)
-    LLC_sub = calc_deviances(LLC_sub, 'T40', box_index)
-
-    # calculate the LF + HF VHF for each time t
-    total_VHF = C_p * rho * LLC_sub['W40_prime'] * LLC_sub['T40_prime']
-
-    # calculate the LF VHF for each time LF_average
-    #LF_VHF = C_p * rho * calc_LF(LLC_sub, LF_average, box_width, box_index)
-    WT = (LLC_sub['W40'] * LLC_sub['T40']).groupby(box_index).mean()
-    Wm = LLC_sub['W40'].groupby(box_index).mean()
-    Tm = LLC_sub['T40'].groupby(box_index).mean()
-    # drop values with box index = bad
-    valid = (WT.XC != -1)
-    # take the mean across all boxes
-    WT = WT.where(valid, drop=True).mean(dim='XC')
-    Wm = Wm.where(valid, drop=True).mean(dim='XC')
-    Tm = Tm.where(valid, drop=True).mean(dim='XC')
-    logger.info('Compute intermediates WT, Wm, Tm')
-    WT = WT.compute()
-    Wm = Wm.compute()
-    Tm = Tm.compute()
-    # calculate covariance
-    LF_cov = WT.coarsen(time=LF_average, boundary='trim').mean() - \
-         (Wm.coarsen(time=LF_average, boundary="trim").mean() *
-          Tm.coarsen(time=LF_average, boundary="trim").mean())
-    logger.info('Compute intermediate LF_cov')
-    LF_cov = LF_cov.compute()
-    # calculate LF VHF
-    LF_VHF = C_p * rho * LF_cov
-
-    # calculate the HF VHF by subtacting LF from total (HF = HF + LF - LF)
-    # expand LF_VHF to match the shape of total_VHF to calculate HF_VHF
-    nt = total_VHF.sizes["time"]
-    nLF = LF_VHF.sizes["time"]
-    # expect nt = LF_average * nLF
-    assert nt == LF_average * nLF, "Time dimensions must satisfy total = LF_average * LF"
-    # build the mapping index
-    idx = np.repeat(np.arange(nLF), LF_average)
-    # now index LF_VHF using integer indexing
-    LF_expanded = LF_VHF.isel(time = xr.DataArray(idx, dims = "time"))
-    LF_expanded = LF_expanded.assign_coords(time = total_VHF.time)
-    # finally calculate HF VHF:
-    HF_VHF = total_VHF - LF_expanded
-
-    # take means across i,j, weighting by cell surface areas to produce a time series
-    weights = LLC_sub['rA']
-    HF_VHF_ts = (HF_VHF * weights).sum(dim = ("i","j")) / weights.sum(dim = ("i","j"))
-    total_VHF_ts = (total_VHF * weights).sum(dim = ("i","j")) / weights.sum(dim = ("i","j"))
-
-    # expand LF to hourly resolution for nice plotting
-    idx = np.repeat(np.arange(LF_VHF.sizes["time"]), LF_average)
-    LF_expanded_ts = LF_VHF.isel(time=xr.DataArray(idx, dims="time"))
-    LF_expanded_ts = LF_expanded_ts.assign_coords(time=HF_VHF_ts.time)
+    W = LLC_sub['W_interp']
+    T = LLC_sub['Theta']
 
     """
-    Compute plotting reqs before figure production
+    5. coarse grain spatially by box
     """
+
+    # group into boxes
+    WT = (W * T).groupby("box").mean()
+    Wm = W.groupby("box").mean()
+    Tm = T.groupby("box").mean()
+
+    valid = (WT.box != -1)
+    WT = WT.where(valid)
+    Wm = Wm.where(valid)
+    Tm = Tm.where(valid)
+
+    """
+    6. calculate the total VHF with $C_p \rho <W'T'>$ for each time t, where <W'T'> = bar(WT) - bar(W) bar(T)
+    """
+
+    # calculate <W'T'>, avg by box
+    total_WT_ = (WT.mean(dim="box") - Wm.mean(dim="box") * Tm.mean(dim="box"))
+
+    VHF_total = C_p * rho * total_WT_
+
+    """
+    7. take the temporal fourier transform of <W'T'>
+    """
+
+    time_axis = total_WT_.get_axis_num("time")
+    total_hat = np.fft.fft(total_WT_, axis=time_axis)
+
+    """
+    8. define LF and HF by respectively applying a low and high pass filter to <W'T'> using a mask and inverse fourier transform back into time space
+    """
+    dt = 1.0  # data is hourly
+    Nt = total_WT_.sizes["time"]
+
+    freq = np.fft.fftfreq(Nt, d=dt)  # in cycles per hour
+
+    # define cutoff
+    fc = dt / LF_average
+
+    # define masks
+    LF_mask = np.abs(freq) <= fc
+    HF_mask = np.abs(freq) > fc
+
+    # reshape masks into [time]
+    shape = [1] * total_WT_.ndim
+    shape[time_axis] = Nt
+
+    LF_mask_nd = LF_mask.reshape(shape)
+    HF_mask_nd = HF_mask.reshape(shape)
+
+    # apply masks
+    LF_hat = total_hat * LF_mask_nd
+    HF_hat = total_hat * HF_mask_nd
+
+    # inverse fourier transform back into time space, take the real
+    WT_LF = np.fft.ifft(LF_hat, axis=time_axis).real
+    WT_HF = np.fft.ifft(HF_hat, axis=time_axis).real 
+
+    """
+    9. define LF and HF VHF respectively with $C_p \rho W_{lowpass} T_{lowpass}$ and $C_p \rho W_{highpass} T_{highpass}$
+    """
+    # define VHF
+    LF_VHF=  C_p * rho * WT_LF
+    HF_VHF=  C_p * rho * WT_HF
+
+    # convert to xr.dataarray
+    LF_VHF = xr.DataArray(LF_VHF, coords={"time": VHF_total.time}, dims=["time"], name="LF_VHF")
+    HF_VHF = xr.DataArray(HF_VHF, coords={"time": VHF_total.time}, dims=["time"], name="HF_VHF")
+   
+    """
+    10. Compute plotting reqs before figure production
+    """
+
     logger.info('Compute plotting reqs')
-    total_VHF_ts = total_VHF_ts.compute()
-    HF_VHF_ts = HF_VHF_ts.compute()
-    LF_expanded_ts = LF_expanded_ts.compute()
+    VHF_total = VHF_total.compute()
+    LF_VHF = LF_VHF.compute()
+    HF_VHF = HF_VHF.compute()
 
     """
-    Produce figure
+    9. Produce figure
     """
+
     logger.info('Produce figure')
     outdir = Path(__file__).resolve().parent
     fig, ax = plt.subplots(figsize=(14, 6))
 
-    ax.plot(total_VHF_ts.time, total_VHF_ts, color="black", label="Total VHF", linewidth=2)
-    ax.plot(HF_VHF_ts.time, HF_VHF_ts, color="blue", label="HF VHF", linewidth=1.5)
-    ax.plot(LF_expanded_ts.time, LF_expanded_ts, color="red", label="LF VHF", linewidth=2)
+    ax.plot(VHF_total.time, VHF_total, color="black", label="Total VHF", linewidth=2)
+    ax.plot(HF_VHF.time, HF_VHF, color="blue", label="HF VHF", linewidth=1.5)
+    ax.plot(LF_VHF.time, LF_VHF, color="red", label="LF VHF", linewidth=2)
 
     ax.set_title("VHF Decomposition — Time Series", fontsize=18)
     ax.set_xlabel("Time", fontsize=14)
