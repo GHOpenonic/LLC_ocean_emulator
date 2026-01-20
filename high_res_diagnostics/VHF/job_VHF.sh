@@ -1,11 +1,11 @@
 #!/bin/bash
 #SBATCH -p pi_abodner
-#SBATCH --job-name=VHF_1_deg_500m_butter_test
+#SBATCH --job-name=VHF_1deg_40m_test
 #SBATCH -N 1
 #SBATCH --ntasks-per-node=1
 #SBATCH --mem=100GB
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=9
+#SBATCH --cpus-per-task=8
 #SBATCH --time=00-12:00:00
 #SBATCH -o logs/%x-%j.out
 #SBATCH -e logs/%x-%j.out
@@ -20,15 +20,13 @@ location=/home/codycruz/LLC_ocean_emulator/high_res_diagnostics/VHF
 # Memory profiling flag =================================================
 scalene=True # True or False
 
-
-
 # activate uv environment for ocean_emulator
 uv sync --extra profiling
 
 #
-export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK # prevent thread oversubscription from FFTs
-export MKL_NUM_THREADS=$SLURM_CPUS_PER_TASK #limit number of threads used by numpy, scipy
-export OPENBLAS_NUM_THREADS=$SLURM_CPUS_PER_TASK # limit number of threads used by BLAS backend
+export OMP_NUM_THREADS=1 # prevent thread oversubscription from FFTs
+export MKL_NUM_THREADS=1 #limit number of threads used by numpy, scipy
+export OPENBLAS_NUM_THREADS=1 # limit number of threads used by BLAS backend
 export SCALENE_PROFILE=True # allow script to see scalene flag
 
 echo "======== calculate VHF of a spatiotemporal subset of the LLC4320 dataset ========"

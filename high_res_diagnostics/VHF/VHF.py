@@ -13,15 +13,12 @@ The methods are as follows:
     values are horizontally centered, but vertically shifted to the edges of LLC pixels. Tiling spatially enables spatial mean calculation and breaks fft computation up to fit in memory
 5. calculate the total VHF with $C_p \rho <W'T'>$ for each time t, where <W'T'> = bar(WT) - bar(W) bar(T), where <W'T'> is the heat transport due to correlated fluctuations in W and T,
     bar(WT) is the total vertical heat transport (both mean and correlated fluctuations), and bar(W) bar(T) is the heat transport due to the mean vertical motion carrying mean temperature.
-6. loop over each tile -> VHF per tile 
-    a. split each tile into sub-boxes, needed for calculating spatial averages 
-    b. take the temporal fourier transform of W and T fields, define LF and HF by applying butterworth filters to W and T fields, inverse fourier transform back into time space
-        paper on butterworth filters in oceanography: Roberts, J., & Roberts, T. D. (1978). Use of the Butterworth low‐pass filter for oceanographic data. Journal of Geophysical Research: Oceans, 83(C11), 5510-5514.
-    c. calculate VHF with the same equation as in 5
-7. concat tiles together, apply a rolling mean for plotting
-8. Compute plotting reqs before figure production
-9. Produce figure
-10. Optionally save VHF time series as netcdf for further analysis 
+6. define LF/HF masks
+7. LF, HF VHF calculation
+8. calculate sum of LF and HF, apply a rolling mean for plotting
+9. Compute plotting reqs before figure production
+10. Produce figure
+11. Optionally save VHF time series as netcdf for further analysis 
 
 Note on fft(W,T) fields:
 filtering W and T fields separately before calculating <WT> isolates the VHF carried by the low and high frequency motions themselves,
@@ -115,6 +112,51 @@ def build_sub_index(LLC, resolution_deg,type):
         box[j0:j1, i0:i1] = box_id
     return box
 
+# build i,j,face index for a lat/lon spatial box about central lat/lon coord for llc4320
+def llc_latlon_box_indices(
+    LLC,
+    lat_center,
+    lon_center,
+    degree_extent
+):
+
+    half = degree_extent / 2.0
+
+    lat_min = lat_center - half
+    lat_max = lat_center + half
+    lon_min = lon_center - half
+    lon_max = lon_center + half
+
+    XC = LLC["XC"]
+    YC = LLC["YC"]
+
+    face_boxes = {}
+
+    for face in XC.face.values:
+        xc = XC.sel(face=face)
+        yc = YC.sel(face=face)
+
+        # mask points inside the lat/lon box
+        mask = (
+            (yc >= lat_min) & (yc <= lat_max) &
+            (xc >= lon_min) & (xc <= lon_max)
+        )
+
+        if not mask.any():
+            continue
+
+        # get i/j indices where mask is True
+        jj, ii = np.where(mask.values)
+
+        j_start = int(jj.min())
+        j_end   = int(jj.max()) + 1
+        i_start = int(ii.min())
+        i_end   = int(ii.max()) + 1
+
+        face_boxes[int(face)] = (j_start, j_end, i_start, i_end)
+
+    return face_boxes
+
 
 def main():
     logger.info('Initializing Dask')
@@ -126,6 +168,7 @@ def main():
     # get SLURM environment variables, flags
     slurm_job_name = os.environ.get("SLURM_JOB_NAME", "job")
     slurm_job_id = os.environ.get("SLURM_JOB_ID", "0")
+    SLURM_CPUS_PER_TASK = int(os.environ.get("SLURM_CPUS_PER_TASK", 1))
     scalene_flag = os.environ.get("SCALENE_PROFILE", "True").lower() in ("True")
 
     if scalene_flag:
@@ -134,7 +177,7 @@ def main():
 
     cluster = LocalCluster(
         n_workers=1,
-        threads_per_worker=8,
+        threads_per_worker = SLURM_CPUS_PER_TASK,
         memory_limit="80GB", # 480, 530 for 2 deg
         dashboard_address=None)
     client = Client(cluster)
@@ -154,47 +197,35 @@ def main():
     # set size of tile in degrees lat/lon, sets FFT tile sizes, 
     # set size of sub-tile boxes in lat/lon, set i,j extents of the spatial box
     # ------------ 1 deg Kuroshio Extension centered @ 39°N, 158°E
-    i_0 = 2790
-    i_1 = 2860
-    j_0 = 745
-    j_1 = 795
-    tile_width = .51 #4 tiles at 1 deg
-    box_width = 0.23 # 4 box
-    face = 7
+    lat_center = 39
+    lon_center = 158
+    degree_extent = 1.2 # a little greater than 1 allows tile_width to trim to 4 sub-panels of exactly 0.5 x 0.5 deg^2 = 1 x 1 deg^2
+    tile_width = 0.5
 
     # ------------- 2 deg Kuroshio Extension centered @ 39°N, 158°E
-    # i_0 = 2755
-    # i_1 = 2895
-    # j_0 = 720
-    # j_1 = 820
-    # tile_width = 1 # 4 tiles at 2 deg
-    # box_width = 0.45# 4 box
-    # face = 7
+    # lat_center = 39
+    # lon_center = 158
+    # degree_extent = 2.2
+    # tile_width = 1.0
 
     # ------------ 1 deg Agulhas Current centered @ 43°S, 14°E
-    # i_0 = 2790
-    # i_1 = 2860
-    # j_0 = 745
-    # j_1 = 795
-    # tile_width = .51 #4 tiles at 1 deg
-    # box_width = 0.23 # 4 box
-    # face = ?
+    # lat_center = -43
+    # lon_center = 14
+    # degree_extent = 1.2
+    # tile_width = 0.5
 
     # ------------- 2 deg Agulhas Current centered @ 43°S, 14°E
-    # i_0 = 2755
-    # i_1 = 2895
-    # j_0 = 720
-    # j_1 = 820
-    # tile_width = 1 # 4 tiles at 2 deg
-    # box_width = 0.45# 4 box
-    # face = ?
+    # lat_center = -43
+    # lon_center = 14
+    # degree_extent = 2.2
+    # tile_width = 1.0
 
     # rolling mean temporal extent for plotting
-    rolling_mean_l = 48 
+    rolling_mean_l = 24 * 1
 
     # temporal extent of the calculation/time series
     t_0 =  0 #4000
-    t_1 =  int(429 * 24)# t_0 +  24 * 4 * 4#
+    t_1 =  24*5#int(429 * 24)# t_0 +  24 * 4 * 4#
 
     # LF average: define the LF/HF temporal cutoff
     LF_cutoff  = 24 * 3
@@ -210,10 +241,16 @@ def main():
     # open LLC4320
     LLC_full = xr.open_zarr('/orcd/data/abodner/003/LLC4320/LLC4320',consolidated=False)
 
-    # select [i,j] spatial box, face 7, temporal subset, chunk
-    LLC_sub = LLC_full.isel(time = slice(t_0,t_1), \
-        i = slice(i_0, i_1), j = slice(j_0, j_1), \
-            face = face).chunk({'time': -1, 'i': -1, 'j': -1})
+    # select [i,j] spatial box, face, temporal subset, chunk
+    boxes = llc_latlon_box_indices(
+    LLC_full,
+    lat_center=lat_center,
+    lon_center=lon_center,
+    degree_extent=degree_extent)
+
+    for face, (j0, j1, i0, i1) in boxes.items():
+        LLC_sub = LLC_full.isel(face=face, j=slice(j0, j1), i=slice(i0, i1))
+    LLC_sub = LLC_sub.chunk({'time': -1, 'j': -1, 'i': -1})
 
 
     """
@@ -247,12 +284,6 @@ def main():
     T = LLC_sub['Theta']
     A = LLC_sub['rA']
 
-    # trim
-    valid = W.tile >= 0
-    W = W.where(valid)
-    T = T.where(valid)
-    A = A.where(valid)
-
     """
     5. calculate the total VHF with $C_p \rho <W'T'>$ for each time t, where <W'T'> = bar(WT) - bar(W) bar(T), 
     """
@@ -264,13 +295,13 @@ def main():
     T_m = ((T * A).groupby("tile").sum() / A.groupby("tile").sum())
 
 
-    # calculate <W'T'>, avg by box
+    # calculate <W'T'>, avg by tile
     total_WT_ = (WT_m.mean(dim="tile") - (W_m.mean(dim="tile") * T_m.mean(dim="tile")))
 
     VHF_total = C_p * rho * total_WT_
 
     """
-    6. define LF/HF masks, heat capacity, density, and loop over each tile, 
+    6. define LF/HF masks
     """ 
 
     time_axis = total_WT_.get_axis_num("time")
@@ -294,115 +325,69 @@ def main():
     LF_mask_nd = np.abs(h_LF)[:, None, None]  # expand dims for broadcasting
     HF_mask_nd = np.abs(h_HF)[:, None, None]
 
-    # define heat capacity and density
-    C_p = 3900
-    rho = 1025
-
-    # loop over each tile, calculate VHF
-    LF_VHF_list = []
-    HF_VHF_list = []
-    for tile in np.unique(LLC_sub.tile.values):
-        if tile >= 0:
-            # select current tile
-            LLC_tile = LLC_sub.where(LLC_sub.tile == tile, drop=True).persist() # materialize tile, give unique key
-
-            """
-            6 a. split each tile into sub-boxes, needed for calculating spatial averages 
-            """
-
-            # break tile into sub-boxes
-            box_index = build_sub_index(LLC_tile, box_width,"box").compute()
-            LLC_tile = LLC_tile.assign_coords(box=box_index)
-
-            # mask invalid pixels
-            LLC_tile = LLC_tile.where(LLC_tile.box >= 0)
-            
-            # define W, T, A
-            W = LLC_tile['W_interp']
-            T = LLC_tile['Theta']
-            A = LLC_tile['rA']
-
-            # trim
-            valid = W.box >= 0
-            W = W.where(valid)
-            T = T.where(valid)
-            A = A.where(valid)
-            """
-            6 b. take the temporal fourier transform of W and T fields, define LF and HF by applying low/high pass filters to W and T fields, inverse fourier transform back into time space
-            """
-            # take the temporal fft of the W and T fields
-            time_axis = W.get_axis_num("time")
-            W_f = da.fft.fft(W.data, axis=time_axis)
-            T_f = da.fft.fft(T.data, axis=time_axis)
-
-            # apply masks (broadcasts over i,j)
-            LF_W = W_f * LF_mask_nd
-            HF_W = W_f * HF_mask_nd
-
-            LF_T = T_f * LF_mask_nd
-            HF_T = T_f * HF_mask_nd
-
-            # inverse fourier transform back into time space, take the real
-            W_LF = da.fft.ifft(LF_W, axis=time_axis).real
-            W_HF = da.fft.ifft(HF_W, axis=time_axis).real 
-
-            T_LF = da.fft.ifft(LF_T, axis=time_axis).real
-            T_HF = da.fft.ifft(HF_T, axis=time_axis).real 
-
-            # return to xarray
-            coords = {"time": W.time, "i": W.i, "j": W.j}
-            dims = ("time", "j", "i")
-            
-            W_LF = xr.DataArray(W_LF, coords=coords, dims=dims, name="W_LF")
-            W_HF = xr.DataArray(W_HF, coords=coords, dims=dims, name="W_HF")
-
-            T_LF = xr.DataArray(T_LF, coords=coords, dims=dims, name="T_LF")
-            T_HF = xr.DataArray(T_HF, coords=coords, dims=dims, name="T_HF")
-
-            """
-            6 c. calculate VHF with the same equation as in 5
-            """
-
-            # define WT, Wm, Tm, weighting by surface cell areas ================ box === tile
-            spatial_divider = "box"
-            # LF
-            WT_LF = (W_LF * T_LF * A).groupby(f'{spatial_divider}').sum() / A.groupby(f'{spatial_divider}').sum()
-            Wm_LF = (W_LF * A).groupby(f'{spatial_divider}').sum() / A.groupby(f'{spatial_divider}').sum()
-            Tm_LF = (T_LF * A).groupby(f'{spatial_divider}').sum() / A.groupby(f'{spatial_divider}').sum()
-
-            # HF
-            WT_HF = (W_HF * T_HF * A).groupby(f'{spatial_divider}').sum() / A.groupby(f'{spatial_divider}').sum()
-            Wm_HF = (W_HF * A).groupby(f'{spatial_divider}').sum() / A.groupby(f'{spatial_divider}').sum()
-            Tm_HF = (T_HF * A).groupby(f'{spatial_divider}').sum() / A.groupby(f'{spatial_divider}').sum()
-
-            # define VHF
-            LF_VHF =  C_p * rho * (WT_LF.mean(dim=f'{spatial_divider}') - Wm_LF.mean(dim=f'{spatial_divider}') * Tm_LF.mean(dim=f'{spatial_divider}'))
-            HF_VHF =  C_p * rho * (WT_HF.mean(dim=f'{spatial_divider}') - Wm_HF.mean(dim=f'{spatial_divider}') * Tm_HF.mean(dim=f'{spatial_divider}'))
-
-            # compute VHF per tile, append to lists
-            LF_VHF = LF_VHF.compute()
-            HF_VHF = HF_VHF.compute()
-
-            LF_VHF_list.append(LF_VHF)
-            HF_VHF_list.append(HF_VHF)
-
-            # clear per-tile graphs
-            client = get_client()
-            client.cancel([
-                W_LF, W_HF, T_LF, T_HF, WT_LF, WT_HF, Wm_LF, Wm_HF, Tm_LF, Tm_HF])
-
-
-
-            # logging
-        #    logger.info(f'tile {tile} complete')
 
     """
-    7. concat tiles together, apply a rolling mean for plotting
+    7. LF, HF VHF calculation
     """
 
-    # concat lists together
-    LF_VHF = xr.concat(LF_VHF_list, dim="tile").mean("tile")
-    HF_VHF = xr.concat(HF_VHF_list, dim="tile").mean("tile")
+    W = LLC_sub["W_interp"]
+    T = LLC_sub["Theta"]
+    A = LLC_sub["rA"]
+
+    # FFT in time, apply LF / HF Butterworth masks
+    time_axis = W.get_axis_num("time")
+
+    W_f = da.fft.fft(W.data, axis=time_axis)
+    T_f = da.fft.fft(T.data, axis=time_axis)
+
+    # apply LF / HF masks (broadcast over j, i)
+    LF_W = W_f * LF_mask_nd
+    HF_W = W_f * HF_mask_nd
+
+    LF_T = T_f * LF_mask_nd
+    HF_T = T_f * HF_mask_nd
+
+    # inverse FFT
+    W_LF = da.fft.ifft(LF_W, axis=time_axis).real
+    W_HF = da.fft.ifft(HF_W, axis=time_axis).real
+
+    T_LF = da.fft.ifft(LF_T, axis=time_axis).real
+    T_HF = da.fft.ifft(HF_T, axis=time_axis).real
+
+    # back to xarray
+    coords = W.coords
+    dims = W.dims
+
+    W_LF = xr.DataArray(W_LF, coords=coords, dims=dims, name="W_LF")
+    W_HF = xr.DataArray(W_HF, coords=coords, dims=dims, name="W_HF")
+    T_LF = xr.DataArray(T_LF, coords=coords, dims=dims, name="T_LF")
+    T_HF = xr.DataArray(T_HF, coords=coords, dims=dims, name="T_HF")
+
+    # VHF calculation
+    spatial_divider = "tile"
+
+    # ---------- LF ----------
+    WT_LF = (W_LF * T_LF * A).groupby(spatial_divider).sum() / A.groupby(spatial_divider).sum()
+    Wm_LF = (W_LF * A).groupby(spatial_divider).sum() / A.groupby(spatial_divider).sum()
+    Tm_LF = (T_LF * A).groupby(spatial_divider).sum() / A.groupby(spatial_divider).sum()
+
+    LF_VHF = C_p * rho * (
+        WT_LF.mean(dim=spatial_divider)
+        - Wm_LF.mean(dim=spatial_divider) * Tm_LF.mean(dim=spatial_divider))
+
+    # ---------- HF ----------
+    WT_HF = (W_HF * T_HF * A).groupby(spatial_divider).sum() / A.groupby(spatial_divider).sum()
+    Wm_HF = (W_HF * A).groupby(spatial_divider).sum() / A.groupby(spatial_divider).sum()
+    Tm_HF = (T_HF * A).groupby(spatial_divider).sum() / A.groupby(spatial_divider).sum()
+
+    HF_VHF = C_p * rho * (
+        WT_HF.mean(dim=spatial_divider)
+        - Wm_HF.mean(dim=spatial_divider) * Tm_HF.mean(dim=spatial_divider))
+
+    """
+    8. calculate sum of LF and HF, apply a rolling mean for plotting
+    """
+
     VHF_total_sum = LF_VHF + HF_VHF
 
     # rolling means for better visualization
@@ -412,7 +397,7 @@ def main():
     VHF_total = VHF_total.rolling(time=rolling_mean_l).mean()
 
     """
-    8. Compute plotting reqs before figure production
+    9. Compute plotting reqs before figure production
     """
 
     logger.info('Compute plotting reqs')
@@ -422,7 +407,7 @@ def main():
     VHF_total_sum = VHF_total_sum.compute()
 
     """
-    9. Produce figure
+    10. Produce figure
     """
 
     logger.info('Produce figure')
@@ -444,7 +429,7 @@ def main():
     plt.close(fig)
 
     """
-    10. Optionally save VHF time series as netcdf for further analysis
+    11. Optionally save VHF time series as netcdf for further analysis
     """
     #logger.info('Save VHF time series')
     #LF_VHF.to_netcdf(outdir / "timeseries" / "LF_VHF_ts.nc")
