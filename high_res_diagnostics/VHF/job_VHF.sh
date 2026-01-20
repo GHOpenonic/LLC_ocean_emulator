@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH -p pi_abodner
-#SBATCH --job-name=VHF_1_deg_40m_butter_test
+#SBATCH --job-name=VHF_1_deg_500m_butter_test
 #SBATCH -N 1
 #SBATCH --ntasks-per-node=1
 #SBATCH --mem=100GB
@@ -18,7 +18,7 @@ module load miniforge/24.3.0-0
 location=/home/codycruz/LLC_ocean_emulator/high_res_diagnostics/VHF
 
 # Memory profiling flag =================================================
-scalene=False # True or False
+scalene=True # True or False
 
 
 

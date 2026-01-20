@@ -148,7 +148,7 @@ def main():
     exp_name = str(slurm_job_name)
 
     # set depth
-    depth_ind = 14 #14 is 40m, 21 is 100m, 30 is 250m, 39 is 500m 
+    depth_ind = 39 #14 is 40m, 21 is 100m, 30 is 250m, 39 is 500m 
 
     
     # set size of tile in degrees lat/lon, sets FFT tile sizes, 
