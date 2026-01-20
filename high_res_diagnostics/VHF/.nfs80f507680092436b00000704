@@ -157,28 +157,6 @@ def llc_latlon_box_indices(
 
     return face_boxes
 
-# Cosine taper mask
-def cosine_taper(freq, fc):
-    """
-    Return amplitude mask: 1 below cutoff, smoothly decays to 0 above fc.
-    Symmetric for negative frequencies.
-    """
-    mask = np.ones_like(freq)
-    transition_width = fc  # width of taper zone (can tune to e.g., fc*0.1)
-    
-    # positive frequencies above fc
-    pos_idx = np.logical_and(freq >= fc, freq <= fc + transition_width)
-    mask[pos_idx] = 0.5 * (1 + np.cos(np.pi * (freq[pos_idx] - fc) / transition_width))
-    
-    # negative frequencies below -fc
-    neg_idx = np.logical_and(freq <= -fc, freq >= -fc - transition_width)
-    mask[neg_idx] = 0.5 * (1 + np.cos(np.pi * (freq[neg_idx] + fc) / transition_width))
-    
-    # zero out beyond taper
-    mask[np.abs(freq) > (fc + transition_width)] = 0.0
-    
-    return mask
-
 
 def main():
     logger.info('Initializing Dask')
@@ -263,7 +241,7 @@ def main():
     # open LLC4320
     LLC_full = xr.open_zarr('/orcd/data/abodner/003/LLC4320/LLC4320',consolidated=False)
 
-    # select [i,j] spatial box, face, temporal subset
+    # select [i,j] spatial box, face, temporal subset, chunk
     boxes = llc_latlon_box_indices(
     LLC_full,
     lat_center=lat_center,
@@ -272,9 +250,7 @@ def main():
 
     for face, (j0, j1, i0, i1) in boxes.items():
         LLC_sub = LLC_full.isel(face=face, j=slice(j0, j1), i=slice(i0, i1))
-
-    # chunk
-    LLC_sub = LLC_sub.chunk({'time': 512, 'j': 64, 'i': 64})
+    LLC_sub = LLC_sub.chunk({'time': -1, 'j': -1, 'i': -1})
 
 
     """
@@ -304,23 +280,23 @@ def main():
     # mask invalid pixels (the purple edges in the fig below)
     LLC_sub = LLC_sub.where(LLC_sub.tile >= 0)
 
-    # define, W and T, weighting by surface areas
-    A = LLC_sub['rA'] # surface areas
-    W = LLC_sub['W_interp'] * A
-    T = LLC_sub['Theta'] * A
+    W = LLC_sub['W_interp']
+    T = LLC_sub['Theta']
+    A = LLC_sub['rA']
 
     """
     5. calculate the total VHF with $C_p \rho <W'T'>$ for each time t, where <W'T'> = bar(WT) - bar(W) bar(T), 
     """
 
-    # sum by tile, preserving area weighting
-    WT_m = (W * T).groupby("tile").sum()
-    W_m  = W.groupby("tile").sum()
-    T_m  = T.groupby("tile").sum()
+
+    # define WT, Wm, Tm, weighting by surface cell areas
+    WT_m = ((W * T * A).groupby("tile").sum() / A.groupby("tile").sum())
+    W_m = ((W * A).groupby("tile").sum() / A.groupby("tile").sum())
+    T_m = ((T * A).groupby("tile").sum() / A.groupby("tile").sum())
 
 
     # calculate <W'T'>, avg by tile
-    total_WT_ = (WT_m.mean(dim='tile') - (W_m.mean(dim='tile') * T_m.mean(dim='tile')))
+    total_WT_ = (WT_m.mean(dim="tile") - (W_m.mean(dim="tile") * T_m.mean(dim="tile")))
 
     VHF_total = C_p * rho * total_WT_
 
@@ -334,27 +310,35 @@ def main():
     fs = 1 / dt # sampling freq
     fc = 1 / LF_cutoff # cutoff freq
     Nt = LLC_sub.sizes['time']
-    freq = np.fft.fftfreq(Nt, d=dt)
     
-    # compute LF/HF masks
-    LF_mask = cosine_taper(freq, fc * 0.1)
-    HF_mask = 1 - LF_mask
+    # define 4th-order lowpass Butterworth filter
+    N_order = 4
+    b_LF, a_LF = butter(N_order, Wn=fc, btype='low', fs=fs)
+    b_HF, a_HF = butter(N_order, Wn=fc, btype='high', fs=fs)
 
-    # expand dims for broadcasting to (time, j, i)
-    LF_mask_nd = LF_mask[:, None, None]
-    HF_mask_nd = HF_mask[:, None, None]
+    # freq for FFT mask
+    freq = np.fft.fftfreq(Nt, d=dt)
+    w, h_LF = freqz(b_LF, a_LF, worN=Nt, fs=fs) # apply butterworth
+    _, h_HF = freqz(b_HF, a_HF, worN=Nt, fs=fs)
+
+    # define LF and HF masks using butter
+    LF_mask_nd = np.abs(h_LF)[:, None, None]  # expand dims for broadcasting
+    HF_mask_nd = np.abs(h_HF)[:, None, None]
 
 
     """
     7. LF, HF VHF calculation
     """
 
+    W = LLC_sub["W_interp"]
+    T = LLC_sub["Theta"]
+    A = LLC_sub["rA"]
+
     # FFT in time, apply LF / HF Butterworth masks
     time_axis = W.get_axis_num("time")
 
-    # rechunk to all time for fft
-    W_f = da.fft.fft(W.chunk({'time': -1, 'j': 64, 'i': 64}).data, axis=time_axis)
-    T_f = da.fft.fft(T.chunk({'time': -1, 'j': 64, 'i': 64}).data, axis=time_axis)
+    W_f = da.fft.fft(W.data, axis=time_axis)
+    T_f = da.fft.fft(T.data, axis=time_axis)
 
     # apply LF / HF masks (broadcast over j, i)
     LF_W = W_f * LF_mask_nd
@@ -374,26 +358,31 @@ def main():
     coords = W.coords
     dims = W.dims
 
-    W_LF = xr.DataArray(W_LF, coords=coords, dims=dims, name="W_LF").chunk({'time': 512, 'j': 64, 'i': 64}) # rechunk after fft
-    W_HF = xr.DataArray(W_HF, coords=coords, dims=dims, name="W_HF").chunk({'time': 512, 'j': 64, 'i': 64})
-    T_LF = xr.DataArray(T_LF, coords=coords, dims=dims, name="T_LF").chunk({'time': 512, 'j': 64, 'i': 64})
-    T_HF = xr.DataArray(T_HF, coords=coords, dims=dims, name="T_HF").chunk({'time': 512, 'j': 64, 'i': 64})
+    W_LF = xr.DataArray(W_LF, coords=coords, dims=dims, name="W_LF")
+    W_HF = xr.DataArray(W_HF, coords=coords, dims=dims, name="W_HF")
+    T_LF = xr.DataArray(T_LF, coords=coords, dims=dims, name="T_LF")
+    T_HF = xr.DataArray(T_HF, coords=coords, dims=dims, name="T_HF")
 
     # VHF calculation
+    spatial_divider = "tile"
 
     # ---------- LF ----------
-    WT_LF = (W_LF * T_LF).groupby("tile").sum()
-    Wm_LF = W_LF.groupby("tile").sum()
-    Tm_LF = T_LF.groupby("tile").sum()
+    WT_LF = (W_LF * T_LF * A).groupby(spatial_divider).sum() / A.groupby(spatial_divider).sum()
+    Wm_LF = (W_LF * A).groupby(spatial_divider).sum() / A.groupby(spatial_divider).sum()
+    Tm_LF = (T_LF * A).groupby(spatial_divider).sum() / A.groupby(spatial_divider).sum()
 
-    LF_VHF = C_p * rho * (WT_LF.mean(dim='tile') - Wm_LF.mean(dim='tile') * Tm_LF.mean(dim='tile'))
+    LF_VHF = C_p * rho * (
+        WT_LF.mean(dim=spatial_divider)
+        - Wm_LF.mean(dim=spatial_divider) * Tm_LF.mean(dim=spatial_divider))
 
     # ---------- HF ----------
-    WT_HF = (W_HF * T_HF).groupby("tile").sum()
-    Wm_HF = W_HF.groupby("tile").sum()
-    Tm_HF = T_HF.groupby("tile").sum()
+    WT_HF = (W_HF * T_HF * A).groupby(spatial_divider).sum() / A.groupby(spatial_divider).sum()
+    Wm_HF = (W_HF * A).groupby(spatial_divider).sum() / A.groupby(spatial_divider).sum()
+    Tm_HF = (T_HF * A).groupby(spatial_divider).sum() / A.groupby(spatial_divider).sum()
 
-    HF_VHF = C_p * rho * (WT_HF.mean(dim='tile') - Wm_HF.mean(dim='tile') * Tm_HF.mean(dim='tile'))
+    HF_VHF = C_p * rho * (
+        WT_HF.mean(dim=spatial_divider)
+        - Wm_HF.mean(dim=spatial_divider) * Tm_HF.mean(dim=spatial_divider))
 
     """
     8. calculate sum of LF and HF, apply a rolling mean for plotting
@@ -412,8 +401,10 @@ def main():
     """
 
     logger.info('Compute plotting reqs')
-    VHF_total, LF_VHF, HF_VHF, VHF_total_sum = dask.compute(
-        VHF_total, LF_VHF, HF_VHF, VHF_total_sum)
+    VHF_total.compute()
+    LF_VHF = LF_VHF.compute()
+    HF_VHF = HF_VHF.compute()
+    VHF_total_sum = VHF_total_sum.compute()
 
     """
     10. Produce figure
