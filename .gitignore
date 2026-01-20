@@ -23,3 +23,6 @@ logs/
 # OS
 .DS_Store
 
+# Ignore scalene output folder
+high_res_diagnostics/VHF/scalene/
+
