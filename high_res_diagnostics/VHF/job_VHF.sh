@@ -1,9 +1,9 @@
 #!/bin/bash
 #SBATCH -p pi_abodner
-#SBATCH --job-name=VHF_1deg_40m_worker_test
+#SBATCH --job-name=VHF_1
 #SBATCH -N 1
 #SBATCH --ntasks-per-node=1
-#SBATCH --mem=400GB
+#SBATCH --mem=330GB
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=24
 #SBATCH --time=00-12:00:00

@@ -179,7 +179,7 @@ def main():
     cluster = LocalCluster(
         n_workers=3,
         threads_per_worker = 8,
-        memory_limit="128GB",
+        memory_limit="100GB",
         dashboard_address=None)
     client = Client(cluster)
     logger.info(client)
@@ -188,38 +188,44 @@ def main():
     2. Set params
     """
     logger.info('Set params')
-    # exp name
-    exp_name = str(slurm_job_name)
 
     # set depth
     depth_ind = 14 #14 is 40m, 21 is 100m, 30 is 250m, 39 is 500m 
+    depth_m = 40
 
-    
+
     # set size of tile in degrees lat/lon, sets FFT tile sizes, 
     # set size of sub-tile boxes in lat/lon, set i,j extents of the spatial box
     # ------------ 1 deg Kuroshio Extension centered @ 39°N, 158°E
+    loc = 'Kuroshio'
     lat_center = 39
     lon_center = 158
-    degree_extent = 1.2 # a little greater than 1 allows tile_width to trim to 4 sub-panels of exactly 0.5 x 0.5 deg^2 = 1 x 1 deg^2
+    extent = 1.0
+    buffer = 0.2 # a little greater than 1 allows tile_width to trim to 4 sub-panels of exactly 0.5 x 0.5 deg^2 = 1 x 1 deg^2
+    degree_extent = extent + buffer
     tile_width = 0.5
 
-    # ------------- 2 deg Kuroshio Extension centered @ 39°N, 158°E
-    # lat_center = 39
-    # lon_center = 158
-    # degree_extent = 2.2
-    # tile_width = 1.0
-
     # ------------ 1 deg Agulhas Current centered @ 43°S, 14°E
+    # loc = 'Agulhas'
     # lat_center = -43
     # lon_center = 14
-    # degree_extent = 1.2
+    # extent = 1.0
+    # buffer = 0.2 # a little greater than 1 allows tile_width to trim to 4 sub-panels of exactly 0.5 x 0.5 deg^2 = 1 x 1 deg^2
+    # degree_extent = extent + buffer
     # tile_width = 0.5
 
-    # ------------- 2 deg Agulhas Current centered @ 43°S, 14°E
-    # lat_center = -43
-    # lon_center = 14
-    # degree_extent = 2.2
-    # tile_width = 1.0
+    # ------------ 1 deg Gulf Stream centered @ 43°S, 14°E
+    # loc = 'Gulf'
+    # lat_center = 39
+    # lon_center = -66
+    # extent = 1.0
+    # buffer = 0.2 # a little greater than 1 allows tile_width to trim to 4 sub-panels of exactly 0.5 x 0.5 deg^2 = 1 x 1 deg^2
+    # degree_extent = extent + buffer
+    # tile_width = 0.5
+
+    # exp name
+    exp_name = str(slurm_job_name) + f'_{depth_m}m' + f'_{loc}' + f'_{extent}deg'
+
 
     # rolling mean temporal extent for plotting
     rolling_mean_l = 24 * 5
