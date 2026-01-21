@@ -1,11 +1,11 @@
 #!/bin/bash
 #SBATCH -p pi_abodner
-#SBATCH --job-name=VHF_1deg_40m_cos_test
+#SBATCH --job-name=VHF_1deg_40m_worker_test
 #SBATCH -N 1
 #SBATCH --ntasks-per-node=1
-#SBATCH --mem=100GB
+#SBATCH --mem=400GB
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
+#SBATCH --cpus-per-task=24
 #SBATCH --time=00-12:00:00
 #SBATCH -o logs/%x-%j.out
 #SBATCH -e logs/%x-%j.out
@@ -18,10 +18,10 @@ module load miniforge/24.3.0-0
 location=/home/codycruz/LLC_ocean_emulator/high_res_diagnostics/VHF
 
 # Memory profiling flag =================================================
-scalene=True # True or False
+scalene=False # True or False
 
-# activate uv environment for ocean_emulator
-uv sync --extra profiling
+# activate virtual environment
+source /home/codycruz/LLC_ocean_emulator/high_res_diagnostics/.venv/bin/activate
 
 #
 export OMP_NUM_THREADS=1 # prevent thread oversubscription from FFTs
@@ -53,7 +53,7 @@ if [ "$scalene" = "True" ]; then
 
 else
     # run the script without memory profiling
-    uv run python "$location/VHF.py"
+    uv run "$location/VHF.py"
 fi
 
 echo "======== job complete ========"

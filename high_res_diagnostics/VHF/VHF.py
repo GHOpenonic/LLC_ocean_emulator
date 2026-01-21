@@ -33,10 +33,10 @@ import xarray as xr
 import numpy as np
 import dask
 import dask.array as da
-from dask.distributed import Client, LocalCluster, get_client
+from dask.distributed import Client, LocalCluster
 import zarr
 import xgcm 
-from scipy.signal import butter, freqz
+from scipy.signal.windows import tukey
 
 from scalene import scalene_profiler
 import os
@@ -157,27 +157,6 @@ def llc_latlon_box_indices(
 
     return face_boxes
 
-# Cosine taper mask
-def cosine_taper(freq, fc):
-    """
-    Return amplitude mask: 1 below cutoff, smoothly decays to 0 above fc.
-    Symmetric for negative frequencies.
-    """
-    mask = np.ones_like(freq)
-    transition_width = fc  # width of taper zone (can tune to e.g., fc*0.1)
-    
-    # positive frequencies above fc
-    pos_idx = np.logical_and(freq >= fc, freq <= fc + transition_width)
-    mask[pos_idx] = 0.5 * (1 + np.cos(np.pi * (freq[pos_idx] - fc) / transition_width))
-    
-    # negative frequencies below -fc
-    neg_idx = np.logical_and(freq <= -fc, freq >= -fc - transition_width)
-    mask[neg_idx] = 0.5 * (1 + np.cos(np.pi * (freq[neg_idx] + fc) / transition_width))
-    
-    # zero out beyond taper
-    mask[np.abs(freq) > (fc + transition_width)] = 0.0
-    
-    return mask
 
 
 def main():
@@ -198,9 +177,9 @@ def main():
         scalene_profiler.start()
 
     cluster = LocalCluster(
-        n_workers=1,
-        threads_per_worker = SLURM_CPUS_PER_TASK,
-        memory_limit="80GB", # 480, 530 for 2 deg
+        n_workers=3,
+        threads_per_worker = 8,
+        memory_limit="128GB",
         dashboard_address=None)
     client = Client(cluster)
     logger.info(client)
@@ -243,11 +222,11 @@ def main():
     # tile_width = 1.0
 
     # rolling mean temporal extent for plotting
-    rolling_mean_l = 24 * 1
+    rolling_mean_l = 24 * 5
 
     # temporal extent of the calculation/time series
     t_0 =  0 #4000
-    t_1 =  24*5#int(429 * 24)# t_0 +  24 * 4 * 4#
+    t_1 =  int(429 * 24)# t_0 +  24 * 4 * 4#
 
     # LF average: define the LF/HF temporal cutoff
     LF_cutoff  = 24 * 3
@@ -273,8 +252,8 @@ def main():
     for face, (j0, j1, i0, i1) in boxes.items():
         LLC_sub = LLC_full.isel(face=face, j=slice(j0, j1), i=slice(i0, i1))
 
-    # chunk
-    LLC_sub = LLC_sub.chunk({'time': 512, 'j': 64, 'i': 64})
+    # select temporal extent, chunk
+    LLC_sub = LLC_sub.isel(time=slice(t_0,t_1)).chunk({'time': -1, 'i': 96, 'j': 96})
 
 
     """
@@ -304,19 +283,19 @@ def main():
     # mask invalid pixels (the purple edges in the fig below)
     LLC_sub = LLC_sub.where(LLC_sub.tile >= 0)
 
-    # define, W and T, weighting by surface areas
-    A = LLC_sub['rA'] # surface areas
-    W = LLC_sub['W_interp'] * A
-    T = LLC_sub['Theta'] * A
+    # define surface area, W, T
+    area = LLC_sub['rA'] # surface areas
+    W = LLC_sub['W_interp']
+    T = LLC_sub['Theta']
 
     """
     5. calculate the total VHF with $C_p \rho <W'T'>$ for each time t, where <W'T'> = bar(WT) - bar(W) bar(T), 
     """
 
     # sum by tile, preserving area weighting
-    WT_m = (W * T).groupby("tile").sum()
-    W_m  = W.groupby("tile").sum()
-    T_m  = T.groupby("tile").sum()
+    WT_m = ((W * T * area).groupby("tile").sum()) / area.groupby("tile").sum()
+    W_m  = ((W * area).groupby("tile").sum()) / area.groupby("tile").sum()
+    T_m  = ((T * area).groupby("tile").sum()) / area.groupby("tile").sum()
 
 
     # calculate <W'T'>, avg by tile
@@ -328,17 +307,30 @@ def main():
     6. define LF/HF masks
     """ 
 
-    time_axis = total_WT_.get_axis_num("time")
+    dt = 1.0  # hours
+    Nt = total_WT_.sizes["time"]
 
-    # define filter cutoff
-    fs = 1 / dt # sampling freq
-    fc = 1 / LF_cutoff # cutoff freq
-    Nt = LLC_sub.sizes['time']
     freq = np.fft.fftfreq(Nt, d=dt)
-    
-    # compute LF/HF masks
-    LF_mask = cosine_taper(freq, fc * 0.1)
-    HF_mask = 1 - LF_mask
+    df = np.abs(freq[1] - freq[0])
+
+    fc = 1 / LF_cutoff  # cutoff frequency (cycles/hour)
+
+    # number of frequency bins below cutoff
+    n_cut = int(np.floor(fc / df))
+
+    # build symmetric Tukey window around zero frequency
+    win_len = 2 * n_cut + 1
+    win = tukey(win_len, alpha=0.3)  # alpha controls smoothness
+
+    LF_mask = np.zeros(Nt)
+
+    # positive frequencies (including zero)
+    LF_mask[: n_cut + 1] = win[n_cut:]
+
+    # negative frequencies
+    LF_mask[-n_cut:] = win[:n_cut]
+
+    HF_mask = 1.0 - LF_mask
 
     # expand dims for broadcasting to (time, j, i)
     LF_mask_nd = LF_mask[:, None, None]
@@ -349,12 +341,12 @@ def main():
     7. LF, HF VHF calculation
     """
 
-    # FFT in time, apply LF / HF Butterworth masks
+    # FFT in time, apply LF / HF
     time_axis = W.get_axis_num("time")
 
-    # rechunk to all time for fft
-    W_f = da.fft.fft(W.chunk({'time': -1, 'j': 64, 'i': 64}).data, axis=time_axis)
-    T_f = da.fft.fft(T.chunk({'time': -1, 'j': 64, 'i': 64}).data, axis=time_axis)
+    # fft
+    W_f = da.fft.fft(W.data, axis=time_axis)
+    T_f = da.fft.fft(T.data, axis=time_axis)
 
     # apply LF / HF masks (broadcast over j, i)
     LF_W = W_f * LF_mask_nd
@@ -374,24 +366,24 @@ def main():
     coords = W.coords
     dims = W.dims
 
-    W_LF = xr.DataArray(W_LF, coords=coords, dims=dims, name="W_LF").chunk({'time': 512, 'j': 64, 'i': 64}) # rechunk after fft
-    W_HF = xr.DataArray(W_HF, coords=coords, dims=dims, name="W_HF").chunk({'time': 512, 'j': 64, 'i': 64})
-    T_LF = xr.DataArray(T_LF, coords=coords, dims=dims, name="T_LF").chunk({'time': 512, 'j': 64, 'i': 64})
-    T_HF = xr.DataArray(T_HF, coords=coords, dims=dims, name="T_HF").chunk({'time': 512, 'j': 64, 'i': 64})
+    W_LF = xr.DataArray(W_LF, coords=coords, dims=dims, name="W_LF")
+    W_HF = xr.DataArray(W_HF, coords=coords, dims=dims, name="W_HF")
+    T_LF = xr.DataArray(T_LF, coords=coords, dims=dims, name="T_LF")
+    T_HF = xr.DataArray(T_HF, coords=coords, dims=dims, name="T_HF")
 
     # VHF calculation
 
     # ---------- LF ----------
-    WT_LF = (W_LF * T_LF).groupby("tile").sum()
-    Wm_LF = W_LF.groupby("tile").sum()
-    Tm_LF = T_LF.groupby("tile").sum()
+    WT_LF = ((W_LF * T_LF * area).groupby("tile").sum()) / area.groupby("tile").sum()
+    Wm_LF = ((W_LF * area).groupby("tile").sum()) / area.groupby("tile").sum()
+    Tm_LF = ((T_LF * area).groupby("tile").sum()) / area.groupby("tile").sum()
 
     LF_VHF = C_p * rho * (WT_LF.mean(dim='tile') - Wm_LF.mean(dim='tile') * Tm_LF.mean(dim='tile'))
 
     # ---------- HF ----------
-    WT_HF = (W_HF * T_HF).groupby("tile").sum()
-    Wm_HF = W_HF.groupby("tile").sum()
-    Tm_HF = T_HF.groupby("tile").sum()
+    WT_HF = ((W_HF * T_HF * area).groupby("tile").sum()) / area.groupby("tile").sum()
+    Wm_HF = ((W_HF * area).groupby("tile").sum()) / area.groupby("tile").sum()
+    Tm_HF = ((T_HF * area).groupby("tile").sum()) / area.groupby("tile").sum()
 
     HF_VHF = C_p * rho * (WT_HF.mean(dim='tile') - Wm_HF.mean(dim='tile') * Tm_HF.mean(dim='tile'))
 
