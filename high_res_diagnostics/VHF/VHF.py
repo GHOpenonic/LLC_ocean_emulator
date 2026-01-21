@@ -62,33 +62,43 @@ def i_j_slices(LLC, spacing):
     i_start, i_end = [], []
     j_start, j_end = [], []
 
-    XC, YC= LLC['XC'].values, LLC['YC'].values
+    XC, YC = LLC['XC'].values, LLC['YC'].values
 
-  #  i_min, j_min = np.min(LLC['i'].values), np.min(LLC['j'].values)
+    # determine lat/lon min/max
+    lon_min, lon_max = np.nanmin(XC), np.nanmax(XC)
+    lat_min, lat_max = np.nanmin(YC), np.nanmax(YC)
 
-    extent = (np.nanmax(XC)) - (np.nanmin(XC))
-    num_boxes = extent/spacing 
+    # number of boxes along lat/lon
+    num_boxes_lon = int(np.ceil((lon_max - lon_min) / spacing))
+    num_boxes_lat = int(np.ceil((lat_max - lat_min) / spacing))
 
-    lon_min, lat_min= np.nanmin(XC), np.nanmin(YC)
+    # loop over boxes in lat/lon
+    for b_lon in range(num_boxes_lon):
+        for b_lat in range(num_boxes_lat):
+            # start/end lat/lon for this box
+            lon_start = lon_min + b_lon * spacing
+            lon_end   = lon_start + spacing
+            lat_start = lat_min + b_lat * spacing
+            lat_end   = lat_start + spacing
 
-    for box in range(int(num_boxes)):
-        # start lat/lon
-        lon_start, lat_start = lon_min + spacing * box, lat_min + spacing * box
+            # compute the distance to box corners
+            dist_start = np.sqrt((XC - lon_start)**2 + (YC - lat_start)**2)
+            dist_end   = np.sqrt((XC - lon_end)**2   + (YC - lat_end)**2)
 
-        # end lat/lon
-        lon_end, lat_end = lon_min + spacing * box + spacing, lat_min + spacing * box + spacing
+            # nearest pixel indices
+            j_s, i_s = np.unravel_index(np.nanargmin(dist_start), XC.shape)
+            j_e, i_e = np.unravel_index(np.nanargmin(dist_end),   XC.shape)
 
-        # convert to i,j
-        lon_dist_s, lat_dist_s = np.nanargmin(np.abs(XC - lon_start)),  np.nanargmin(np.abs(YC - lat_start))
-        (_,i_s), (j_s,_) = np.unravel_index(lat_dist_s, YC.shape), np.unravel_index(lon_dist_s, XC.shape)
+            # sort to ensure proper i/j order
+            i0, i1 = sorted([i_s, i_e])
+            j0, j1 = sorted([j_s, j_e])
 
-        lon_dist_e, lat_dist_e = np.nanargmin(np.abs(XC - lon_end)),  np.nanargmin(np.abs(YC - lat_end))
-        (_,i_e), (j_e,_) = np.unravel_index(lat_dist_e, YC.shape), np.unravel_index(lon_dist_e, XC.shape)
+            i_start.append(i0)
+            i_end.append(i1)
+            j_start.append(j0)
+            j_end.append(j1)
 
-
-        i_start.append(int(i_e)), i_end.append(int(i_s)), j_start.append(int(j_s)), j_end.append(int(j_e))
-   # print (f'i: {i_start[::-1]}, {i_end[::-1]}, j: {j_start}, {j_end}, {int(num_boxes)}')
-    return i_start[::-1], i_end[::-1], j_start, j_end, int(num_boxes)
+    return i_start[::-1], i_end[::-1], j_start, j_end, num_boxes_lon * num_boxes_lat
 
 
 def iterate_boxes(LLC, resolution_deg):
@@ -190,41 +200,42 @@ def main():
     logger.info('Set params')
 
     # set depth
-    depth_ind = 14 #14 is 40m, 21 is 100m, 30 is 250m, 39 is 500m 
-    depth_m = 40
-
+    depth_ind = 39 #14 is 40m, 21 is 100m, 30 is 250m, 39 is 500m 
+    depth_m = 500
 
     # set size of tile in degrees lat/lon, sets FFT tile sizes, 
     # set size of sub-tile boxes in lat/lon, set i,j extents of the spatial box
     # ------------ 1 deg Kuroshio Extension centered @ 39°N, 158°E
-    loc = 'Kuroshio'
-    lat_center = 39
-    lon_center = 158
-    extent = 1.0
-    buffer = 0.2 # a little greater than 1 allows tile_width to trim to 4 sub-panels of exactly 0.5 x 0.5 deg^2 = 1 x 1 deg^2
-    degree_extent = extent + buffer
-    tile_width = 0.5
-
-    # ------------ 1 deg Agulhas Current centered @ 43°S, 14°E
-    # loc = 'Agulhas'
-    # lat_center = -43
-    # lon_center = 14
+    # loc = 'Kuroshio'
+    # lat_center = 39
+    # lon_center = 158
     # extent = 1.0
-    # buffer = 0.2 # a little greater than 1 allows tile_width to trim to 4 sub-panels of exactly 0.5 x 0.5 deg^2 = 1 x 1 deg^2
+    # buffer = 0 # a little greater than 1 allows tile_width to trim to 4 sub-panels of exactly 0.5 x 0.5 deg^2 = 1 x 1 deg^2
     # degree_extent = extent + buffer
     # tile_width = 0.5
+
+    # ------------ 1 deg Agulhas Current centered @ 43°S, 14°E
+    loc = 'Agulhas'
+    lat_center = -43
+    lon_center = 14
+    extent = 1.0
+    buffer = 0 # a little greater than 1 allows tile_width to trim to 4 sub-panels of exactly 0.5 x 0.5 deg^2 = 1 x 1 deg^2
+    degree_extent = extent + buffer
+    tile_width = 0.5
 
     # ------------ 1 deg Gulf Stream centered @ 43°S, 14°E
     # loc = 'Gulf'
     # lat_center = 39
     # lon_center = -66
     # extent = 1.0
-    # buffer = 0.2 # a little greater than 1 allows tile_width to trim to 4 sub-panels of exactly 0.5 x 0.5 deg^2 = 1 x 1 deg^2
+    # buffer = 0 # a little greater than 1 allows tile_width to trim to 4 sub-panels of exactly 0.5 x 0.5 deg^2 = 1 x 1 deg^2
     # degree_extent = extent + buffer
     # tile_width = 0.5
 
     # exp name
     exp_name = str(slurm_job_name) + f'_{depth_m}m' + f'_{loc}' + f'_{extent}deg'
+
+    logger.info(f'Experiment: {exp_name}')
 
 
     # rolling mean temporal extent for plotting

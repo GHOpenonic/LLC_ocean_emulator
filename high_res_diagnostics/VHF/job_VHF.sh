@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH -p pi_abodner
-#SBATCH --job-name=VHF_1
+#SBATCH --job-name=VHF
 #SBATCH -N 1
 #SBATCH --ntasks-per-node=1
 #SBATCH --mem=330GB
