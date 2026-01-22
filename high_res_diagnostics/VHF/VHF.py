@@ -1,8 +1,11 @@
 """
-This diagnostic script calculates the vertical heat flux (VHF) through a layer of water 
+This diagnostic script calculates the vertical heat flux (VHF) at a specified depth 
 in low-frequency (LF), high-frequency (HF), and total (LF + HF) components, 
 then produces a time series figure of these VHF components. These calculations 
-are performed in a specified spatial box in the LLC4320 dataset. 
+are performed in a specified spatial box in the LLC4320 dataset. Because cross-frequency 
+covariance terms are excluded by the LF and HF VHF calculations, (LF + HF) does not
+necessarily equal the total VHF computed from unfiltered fields.
+
 The methods are as follows:
 
 0. Import dependencies, define tile/box helper functions
@@ -14,7 +17,7 @@ The methods are as follows:
 5. calculate the total VHF with $C_p \rho <W'T'>$ for each time t, where <W'T'> = bar(WT) - bar(W) bar(T), where <W'T'> is the heat transport due to correlated fluctuations in W and T,
     bar(WT) is the total vertical heat transport (both mean and correlated fluctuations), and bar(W) bar(T) is the heat transport due to the mean vertical motion carrying mean temperature.
 6. define LF/HF masks
-7. LF, HF VHF calculation
+7. LF, HF VHF calculation via temporal fourier filtering
 8. calculate sum of LF and HF, apply a rolling mean for plotting
 9. Compute plotting reqs before figure production
 10. Produce figure
@@ -200,8 +203,8 @@ def main():
     logger.info('Set params')
 
     # set depth
-    depth_ind = 39 #14 is 40m, 21 is 100m, 30 is 250m, 39 is 500m 
-    depth_m = 500
+    depth_ind = 14 #14 is 40m, 21 is 100m, 30 is 250m, 39 is 500m 
+    depth_m = 40
 
     # set size of tile in degrees lat/lon, sets FFT tile sizes, 
     # set size of sub-tile boxes in lat/lon, set i,j extents of the spatial box
@@ -232,11 +235,6 @@ def main():
     # degree_extent = extent + buffer
     # tile_width = 0.5
 
-    # exp name
-    exp_name = str(slurm_job_name) + f'_{depth_m}m' + f'_{loc}' + f'_{extent}deg'
-
-    logger.info(f'Experiment: {exp_name}')
-
 
     # rolling mean temporal extent for plotting
     rolling_mean_l = 24 * 5
@@ -246,11 +244,16 @@ def main():
     t_1 =  int(429 * 24)# t_0 +  24 * 4 * 4#
 
     # LF average: define the LF/HF temporal cutoff
-    LF_cutoff  = 24 * 3
+    LF_cutoff  = 24 * 7
     dt = 1.0 # hourly data
 
     # define seawater heat capacity and density
     C_p, rho = 3900, 1025
+
+    # exp name
+    exp_name = str(slurm_job_name) + f'_{depth_m}m' + f'_{loc}' + f'_{extent}deg' + f'_{LF_cutoff}hrs'
+
+    logger.info(f'Experiment: {exp_name}')
 
     """
     3. open and subset LLC4320
@@ -266,8 +269,13 @@ def main():
     lon_center=lon_center,
     degree_extent=degree_extent)
 
+    subs = []
     for face, (j0, j1, i0, i1) in boxes.items():
-        LLC_sub = LLC_full.isel(face=face, j=slice(j0, j1), i=slice(i0, i1))
+        subs.append(
+            LLC_full.isel(face=face, j=slice(j0, j1), i=slice(i0, i1))
+        )
+
+    LLC_sub = xr.concat(subs, dim="face")
 
     # select temporal extent, chunk
     LLC_sub = LLC_sub.isel(time=slice(t_0,t_1)).chunk({'time': -1, 'i': 96, 'j': 96})
@@ -355,7 +363,7 @@ def main():
 
 
     """
-    7. LF, HF VHF calculation
+    7. LF, HF VHF calculation via temporal fourier filtering
     """
 
     # FFT in time, apply LF / HF
