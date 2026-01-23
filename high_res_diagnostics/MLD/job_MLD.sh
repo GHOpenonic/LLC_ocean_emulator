@@ -3,10 +3,10 @@
 #SBATCH --job-name=MLD
 #SBATCH -N 1
 #SBATCH --ntasks-per-node=1
-#SBATCH --mem=40GB
+#SBATCH --mem=250GB
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
-#SBATCH --time=00-02:00:00
+#SBATCH --cpus-per-task=16
+#SBATCH --time=00-08:00:00
 #SBATCH -o logs/%x-%j.out
 #SBATCH -e logs/%x-%j.out
 #SBATCH --hint=nomultithread
