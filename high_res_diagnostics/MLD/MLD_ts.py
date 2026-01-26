@@ -1,5 +1,5 @@
 """
-This script calculates mixed layer depth (MLD) time series in half-degree boxes of LLC4320 data following:
+This script calculates mixed layer depth (MLD) time series in half-degree boxes of LLC4320 data using MLD methods in:
 https://github.com/abodner/submeso_param_net/blob/main/scripts/preprocess_llc4320/preprocess.py
 
 The methods are as follows:
@@ -10,7 +10,7 @@ The methods are as follows:
 3. Open and subset LLC4320
 4. Follow code to calculate the MLD
 5. Compute plotting reqs before figure production
-6. Produce figure
+6. Produce figure: MLD time series
 7. Optionally save MLD time series as netcdf for further analysis 
 
 """
@@ -118,10 +118,10 @@ def main():
 
     # set location
     # ------------ 1 deg Kuroshio Extension centered @ 39°N, 158°E
-    # loc = 'Kuroshio'
-    # lat_center = 39
-    # lon_center = 158
-    # degree_extent = 1.0
+    loc = 'Kuroshio'
+    lat_center = 39
+    lon_center = 158
+    degree_extent = 1.0
 
     # ------------ 1 deg Agulhas Current centered @ 43°S, 14°E
     # loc = 'Agulhas'
@@ -130,11 +130,11 @@ def main():
     # degree_extent = 1.0
 
     # ------------ 1 deg Gulf Stream centered @ 43°S, 14°E
-    loc = 'Gulf'
-    lat_center = 39
-    lon_center = -66
-    degree_extent = 1.0
-
+    # loc = 'Gulf'
+    # lat_center = 39
+    # lon
+    #_center = -66
+    # degree_extent = 1.0
     # set temporal extent
     t_0 = 0
     t_1 = int(429 * 24)
@@ -186,8 +186,9 @@ def main():
 
     MLD_pixels = LLC_sub.Z.broadcast_like(sigma0).where(delta_sigma<=0.03).min(dim="k",skipna=True)
 
-    # average MLD over the box
-    MLD = MLD_pixels.mean(dim=['i','j','face'])
+    # average MLD over the box, weight by surface area
+    area = LLC_sub['rA']
+    MLD = (MLD_pixels * area).sum(dim=['i','j','face']) / area.sum(dim=['i','j','face'])
 
     """
     5. Compute plotting reqs before figure production
@@ -197,7 +198,7 @@ def main():
     MLD = MLD.compute()
 
     """
-    6. Produce figure
+    6. Produce figure: MLD time series
     """
     logger.info('Produce figure')
 
@@ -219,7 +220,7 @@ def main():
     """
     7. Optionally save MLD time series as netcdf for further analysis
     """
-    #logger.info('Save VHF time series')
+    #logger.info('Save MLD time series')
     #MLD.to_netcdf(outdir / "data" / f"{exp_name}.nc")
 
     if scalene_flag:

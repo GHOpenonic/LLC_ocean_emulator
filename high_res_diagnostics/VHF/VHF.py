@@ -363,7 +363,7 @@ def main():
 
 
     """
-    7. LF, HF VHF calculation via temporal fourier filtering
+    7. LF, HF VHF calculation via temporal Fourier filtering
     """
 
     # FFT in time, apply LF / HF
