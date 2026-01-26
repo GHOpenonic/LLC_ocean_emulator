@@ -388,12 +388,6 @@ def main():
         plt.close()
 
 
-    """
-    9. Optionally save MLD-tile dataarray as netcdf for further analysis 
-    """
-    #logger.info('Save MLD grid')
-    #MLD_map_sel.to_netcdf(outdir / "data" / f"{exp_name}.nc")
-
     if scalene_flag:
         # stop memory profiling
         scalene_profiler.stop()
