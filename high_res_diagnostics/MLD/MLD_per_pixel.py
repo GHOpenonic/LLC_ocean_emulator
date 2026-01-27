@@ -119,8 +119,7 @@ def main():
     loc = 'Kuroshio'
     lat_center = 39
     lon_center = 158
-    degree_extent = 1.0
-    tile_width = 0.5
+    degree_extent = 15.0
 
 
     # ------------ 1 deg Agulhas Current centered @ 43°S, 14°E
@@ -128,22 +127,19 @@ def main():
     # lat_center = -43
     # lon_center = 14
     # degree_extent = 1.0
-    # tile_width = 0.5
 
     # ------------ 1 deg Gulf Stream centered @ 43°S, 14°E
     # loc = 'Gulf'
     # lat_center = 39
     # lon_center = -66
     # degree_extent = 1.0
-    # tile_width = 0.5
 
     # set temporal params
     t_0 = 0
-    t_1 = int(24*30)#int(429 * 24)
-    time_window = int(24*30) # temporal resolution, currently set to 1 month
+    t_1 = int(24*429)#int(429 * 24)
 
     # exp name, data_dir
-    exp_name = str(slurm_job_name) + f'_{loc}' + f'_{degree_extent}' + f'_{tile_width}' + f'_{time_window}' + f'_({t_0},{t_1})'
+    exp_name = str(slurm_job_name) + f'_{loc}' + f'_{degree_extent}' + f'_({t_0},{t_1})'
     data_dir = '/orcd/data/abodner/002/cody/MLD_per_pixel'
 
     logger.info(f'Experiment: {exp_name}')
@@ -171,7 +167,7 @@ def main():
     LLC_sub = xr.concat(subs, dim="face").isel(face=0) # can't handle multiple faces currently :(
 
     # select temporal extent, chunk: k should be full-column per chunk for .min(dim="k"
-    LLC_sub = LLC_sub.isel(time=slice(t_0,t_1)).chunk({'time': time_window, 'k': -1,'i': 96, 'j': 96})
+    LLC_sub = LLC_sub.isel(time=slice(t_0,t_1)).chunk({'time': 96,'k': -1,'i': 96, 'j': 96})
 
     """
     4. Follow code from https://github.com/abodner/submeso_param_net/blob/main/scripts/preprocess_llc4320/preprocess.py
@@ -189,12 +185,19 @@ def main():
     delta_sigma = sigma0 - sigma0_10m
 
     MLD_pixels = LLC_sub.Z.broadcast_like(sigma0).where(delta_sigma<=0.03).min(dim="k",skipna=True)
+    area = LLC_sub.rA
 
     """
     5. Save as zarr
     """
 
-    MLD_pixels.to_dataset(name="MLD_pixels").to_zarr(store = f"{data_dir}/{exp_name}.zarr",mode="w")
+    ds_out = xr.Dataset({
+        "MLD_pixels": MLD_pixels,
+        "rA": area,
+        "XC": LLC_sub["XC"],
+        "YC": LLC_sub["YC"],})
+
+    ds_out.to_zarr(store = f"{data_dir}/{exp_name}.zarr",mode="w")
 
     if scalene_flag:
         # stop memory profiling

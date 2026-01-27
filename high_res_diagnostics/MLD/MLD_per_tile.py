@@ -8,7 +8,7 @@ The methods are as follows:
 1. Initialize dask
 2. Set params
 3. Open MLD_per_pixel dataset
-4. Subset into tiles
+4. temporally coarsen, subset into tiles
 7. Compute plotting reqs before figure production
 8. Produce figure: time-averaged MLD heatmap with pixels=tile_width
 
@@ -30,6 +30,7 @@ import os
 import pathlib
 import matplotlib.pyplot as plt
 from pathlib import Path
+from xhistogram.xarray import histogram
 
 import logging
 logging.basicConfig(
@@ -104,115 +105,6 @@ def rotate_axes_90_clockwise(ax):
     fig.canvas.draw()
     return new_ax
 
-# build i,j,face index for a lat/lon spatial box about central lat/lon coord for llc4320
-def llc_latlon_box_indices(
-    LLC,
-    lat_center,
-    lon_center,
-    degree_extent):
-
-    half = degree_extent / 2.0
-
-    lat_min = lat_center - half
-    lat_max = lat_center + half
-    lon_min = lon_center - half
-    lon_max = lon_center + half
-
-    XC = LLC["XC"]
-    YC = LLC["YC"]
-
-    face_boxes = {}
-
-    for face in XC.face.values:
-        xc = XC.sel(face=face)
-        yc = YC.sel(face=face)
-
-        # mask points inside the lat/lon box
-        mask = (
-            (yc >= lat_min) & (yc <= lat_max) &
-            (xc >= lon_min) & (xc <= lon_max))
-
-        if not mask.any():
-            continue
-
-        # get i/j indices where mask is True
-        jj, ii = np.where(mask.values)
-
-        j_start = int(jj.min())
-        j_end   = int(jj.max()) + 1
-        i_start = int(ii.min())
-        i_end   = int(ii.max()) + 1
-
-        face_boxes[int(face)] = (j_start, j_end, i_start, i_end)
-
-    return face_boxes
-
-# function to select i-j slices per box by lat/lon boxes
-def i_j_slices(LLC, spacing):
-    i_start, i_end = [], []
-    j_start, j_end = [], []
-
-    XC, YC = LLC['XC'].values, LLC['YC'].values
-
-    # determine lat/lon min/max
-    lon_min, lon_max = np.nanmin(XC), np.nanmax(XC)
-    lat_min, lat_max = np.nanmin(YC), np.nanmax(YC)
-
-    # number of boxes along lat/lon
-    num_boxes_lon = int(np.ceil((lon_max - lon_min) / spacing))
-    num_boxes_lat = int(np.ceil((lat_max - lat_min) / spacing))
-
-    # loop over boxes in lat/lon
-    for b_lon in range(num_boxes_lon):
-        for b_lat in range(num_boxes_lat):
-            # start/end lat/lon for this box
-            lon_start = lon_min + b_lon * spacing
-            lon_end   = lon_start + spacing
-            lat_start = lat_min + b_lat * spacing
-            lat_end   = lat_start + spacing
-
-            # compute the distance to box corners
-            dist_start = np.sqrt((XC - lon_start)**2 + (YC - lat_start)**2)
-            dist_end   = np.sqrt((XC - lon_end)**2   + (YC - lat_end)**2)
-
-            # nearest pixel indices
-            j_s, i_s = np.unravel_index(np.nanargmin(dist_start), XC.shape)
-            j_e, i_e = np.unravel_index(np.nanargmin(dist_end),   XC.shape)
-
-            # sort to ensure proper i/j order
-            i0, i1 = sorted([i_s, i_e])
-            j0, j1 = sorted([j_s, j_e])
-
-            i_start.append(i0)
-            i_end.append(i1)
-            j_start.append(j0)
-            j_end.append(j1)
-
-    return i_start[::-1], i_end[::-1], j_start, j_end, num_boxes_lon * num_boxes_lat
-
-
-def iterate_boxes(LLC, resolution_deg):
-
-    i_start, i_end, j_start, j_end, num_boxes = i_j_slices(LLC, resolution_deg)
-
-    box_id = 0
-    for i0, i1 in zip(i_start, i_end):
-        for j0, j1 in zip(j_start, j_end):
-            # only yield boxes with valid size
-            if (i1 - i0) > 0 and (j1 - j0) > 0:
-                yield box_id, (i0, i1, j0, j1)
-                box_id += 1
-                
-# function to build a box index
-def build_sub_index(LLC, resolution_deg,type):
-    box = xr.full_like(LLC["XC"], fill_value=-1).astype(int)
-    box = box.rename([type])
-
-    for box_id, (i0, i1, j0, j1) in iterate_boxes(LLC, resolution_deg):
-        box[j0:j1, i0:i1] = box_id
-    return box
-
-
 def main():
 
     logger.info('Initializing Dask')
@@ -244,144 +136,89 @@ def main():
     """
     logger.info('Set params')
 
-    # set location
-    # ------------ 1 deg Kuroshio Extension centered @ 39°N, 158°E
-    loc = 'Kuroshio'
-    lat_center = 39
-    lon_center = 158
-    degree_extent = 10.0
+    # set tile width
     tile_width = 0.5
 
-
-    # ------------ 1 deg Agulhas Current centered @ 43°S, 14°E
-    # loc = 'Agulhas'
-    # lat_center = -43
-    # lon_center = 14
-    # degree_extent = 1.0
-    # tile_width = 0.5
-
-    # ------------ 1 deg Gulf Stream centered @ 43°S, 14°E
-    # loc = 'Gulf'
-    # lat_center = 39
-    # lon_center = -66
-    # degree_extent = 1.0
-    # tile_width = 0.5
-
-    # set temporal params
-    t_0 = 0
-    t_1 = int(24*30)#int(429 * 24)
     time_window = int(24*30) # temporal resolution, currently set to 1 month
 
-    # exp name
-    exp_name = str(slurm_job_name) + f'_{loc}' + f'_{degree_extent}' + f'_{tile_width}' + f'_{time_window}' + f'_({t_0},{t_1})'
+    # exp name, data dir, and data
+    data_dir = '/orcd/data/abodner/002/cody/MLD_per_pixel'
+    data = 'MLD__Kuroshio_1.0_(0,720)'
+    exp_name = str(data) + f'_{tile_width}' + f'_{time_window}'
 
     logger.info(f'Experiment: {exp_name}')
 
     """
-    3. open and subset LLC4320
+    3. Open MLD_per_pixel dataset
     """
 
-    # open LLC4320
-    LLC_full = xr.open_zarr('/orcd/data/abodner/003/LLC4320/LLC4320',consolidated=False)
+    # open MLD_per_pixel
+    MLD_per_pixel = xr.open_zarr(f'{data_dir}/{data}.zarr',consolidated=False)
 
-    # select [i,j] spatial box, face, temporal subset
-    boxes = llc_latlon_box_indices(
-    LLC_full,
-    lat_center=lat_center,
-    lon_center=lon_center,
-    degree_extent=degree_extent)
+    # chunk
+    MLD_per_pixel = MLD_per_pixel.chunk({'time':time_window,'i':96,'j':96})
+    """
+    4. Temporally coarsen, subset into tiles
+    """
+    MLD_per_pixel = MLD_per_pixel.coarsen(time=time_window, boundary="trim").mean()
+    area = MLD_per_pixel.rA
 
-    subs = []
-    for face, (j0, j1, i0, i1) in boxes.items():
-        subs.append(
-            LLC_full.isel(face=face, j=slice(j0, j1), i=slice(i0, i1))
-        )
+    # subset into tiles, weight by surface area
+    YC = MLD_per_pixel.YC
+    XC = MLD_per_pixel.XC
+    area = MLD_per_pixel.rA
 
-    LLC_sub = xr.concat(subs, dim="face").isel(face=0) # can't handle multiple faces currently :(
+    lat_edges = np.arange(YC.values.min(), YC.values.max() + tile_width, tile_width)
+    lon_edges = np.arange(XC.values.min(), XC.values.max() + tile_width, tile_width)
 
-    # select temporal extent, chunk: k should be full-column per chunk for .min(dim="k"
-    LLC_sub = LLC_sub.isel(time=slice(t_0,t_1)).chunk({'time': time_window, 'k': -1,'i': 96, 'j': 96})
+    num = histogram(
+        YC,
+        XC,
+        bins=[lat_edges, lon_edges],
+        weights=MLD_per_pixel['MLD_pixels'] * area,
+        dim=("j", "i"))
+
+    den = histogram(
+        YC,
+        XC,
+        bins=[lat_edges, lon_edges],
+        weights=area,
+        dim=("j", "i"))
+
+    MLD_tiles = num / den
 
     """
-    4. Subset into tiles
-    """
-    # select dims
-    LLC_sub = LLC_sub[['Salt','Theta','XC','YC','Z','rA']]
-
-    # break into half-deg tiles:
-    # build tile index
-    tile_width = 0.5
-    tile_index = build_sub_index(LLC_sub, tile_width,"tile").compute()
-    LLC_tiles = LLC_sub.assign_coords(tile=tile_index)
-    # mask invalid pixels (the purple edges in the fig below)
-    LLC_tiles = LLC_tiles.where(LLC_tiles.tile >= 0)
-    
-
-    """
-    5. Follow code from https://github.com/abodner/submeso_param_net/blob/main/scripts/preprocess_llc4320/preprocess.py
-        to calculate the MLD
-    """
-    # reference density 
-    rho0 = 1025 #kg/m^3
-
-    # potential density anomaly 
-    # with the reference pressure of 0 dbar and ρ0 = 1000 kg m−3
-    sigma0 = jmd95numba.rho(LLC_tiles.Salt, LLC_tiles.Theta,0) - rho0
-
-    # sigma0 at 10m depth for reference, no broadcasting
-    sigma0_10m = sigma0.isel(k=6)
-    delta_sigma = sigma0 - sigma0_10m
-
-    MLD_pixels = LLC_tiles.Z.broadcast_like(sigma0).where(delta_sigma<=0.03).min(dim="k",skipna=True)
-    LLC_tiles['MLD'] = MLD_pixels
-
-    """
-    6. group by tiles, weight by surface areas, take temporal means, and map i,j coordinate extents to tiles
-    """
-    # divide into tiles, weight by surface areas
-    area = LLC_tiles['rA']
-
-    MLD_tiles = (
-        (LLC_tiles.MLD * area)
-        .groupby("tile")
-        .sum()
-        / area.groupby("tile").sum())
-
-    # take temporal means
-    MLD_timeavg_tiles = MLD_tiles.coarsen(time=time_window, boundary="trim").mean()
-    # map i,j to tiles
-    MLD_map = MLD_timeavg_tiles.sel(tile=LLC_tiles.tile)
-
-    """
-    7. Compute plotting reqs before figure production
+    5. Compute plotting reqs before figure production
     """
 
     logger.info('Compute plotting reqs')
-    MLD_map = MLD_map.compute()
+    MLD_tiles = MLD_tiles.compute()
 
     """
-    8. Produce figure: time-averaged MLD heatmap with pixels=tile_width
+    6. Produce figures: time-averaged MLD heatmap with pixels=tile_width
     """
     logger.info('Produce figure')
 
-    outdir = Path(__file__).resolve().parent
+    pre_outdir = Path(__file__).resolve().parent
 
-    count = 0
-    for t in MLD_map.time:
-        count += 1
+    
+    outdir = pathlib.Path(f"figs/{exp_name}")  # or whatever path you want
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    for t in MLD_tiles.time.values:
         fig, ax = plt.subplots(figsize=(6,5))
 
-        MLD_map_sel = MLD_map.sel(time=t)
+        MLD_tiles_sel = MLD_tiles.sel(time=t)
 
-        contours = plt.imshow(MLD_map_sel)#ax.contourf(MLD_map_sel.i, MLD_map_sel.j, vals, cmap="Spectral_r",vmin=np.min(vals),vmax=np.max(vals), levels = 5)
+        contours = plt.imshow(MLD_tiles_sel)#ax.contourf(MLD_map_sel.i, MLD_map_sel.j, vals, cmap="Spectral_r",vmin=np.min(vals),vmax=np.max(vals), levels = 5)
 
         plt.colorbar(contours, ax = ax, label="MLD (m)")
 
-        ax.set_title(f"{exp_name}" + f"_t-{count}", fontsize=14)
+        ax.set_title(f"{exp_name}" + f"_t-{t}", fontsize=14)
 
        # rotate_axes_90_clockwise(ax)
 
-        fig.savefig(outdir / str(f"{exp_name}"+ f"_t-{count}.png"), dpi=200, bbox_inches="tight")
+        fig.savefig(outdir / str(f"_t-{t}.png"), dpi=200, bbox_inches="tight")
         plt.close()
 
 
