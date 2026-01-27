@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH -p pi_abodner
-#SBATCH --job-name=MLD_grid_test
+#SBATCH --job-name=MLD_
 #SBATCH -N 1
 #SBATCH --ntasks-per-node=1
 #SBATCH --mem=250GB
@@ -48,7 +48,7 @@ if [ "$scalene" = "True" ]; then
 
 else
     # run the script without memory profiling
-    uv run "$location/MLD_grid.py"
+    uv run "$location/MLD_per_pixel.py"
 fi
 
 echo "======== job complete ========"

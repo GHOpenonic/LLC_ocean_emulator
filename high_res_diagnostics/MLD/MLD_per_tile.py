@@ -1,19 +1,16 @@
 """
-This script calculates mixed layer depth (MLD) time-averaged MLD heatmaps of LLC4320 data using MLD methods in:
-https://github.com/abodner/submeso_param_net/blob/main/scripts/preprocess_llc4320/preprocess.py
+This script takes mixed layer depth (MLD) per pixel calculations previously performed in MLD_per_pixel.py 
+and calculates and plots time-averaged MLD heatmaps of LLC4320 data.
 
 The methods are as follows:
 
 0. Import dependencies, define tile/box helper functions
 1. Initialize dask
 2. Set params
-3. Open and subset LLC4320
+3. Open MLD_per_pixel dataset
 4. Subset into tiles
-5. Follow code to calculate the MLD
-6. group by tiles, weight by surface areas, take temporal means, and map i,j coordinate extents to tiles
 7. Compute plotting reqs before figure production
 8. Produce figure: time-averaged MLD heatmap with pixels=tile_width
-9. Optionally save MLD-tile dataarray as netcdf for further analysis 
 
 """
 
