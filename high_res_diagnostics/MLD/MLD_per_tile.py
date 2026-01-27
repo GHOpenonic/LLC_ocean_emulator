@@ -40,70 +40,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# define functions
-# first define a helper function to rotate plots for N-S/vertical alignment
-def rotate_axes_90_clockwise(ax):
-    """
-    Robustly rotate a Matplotlib Axes 90 degrees clockwise by:
-      - rendering the figure to an RGBA buffer,
-      - cropping the pixels belonging to the given Axes,
-      - rotating the image 90 deg clockwise,
-      - placing the rotated image back into the figure at the same axes position,
-      - removing the original Axes.
-
-    Notes:
-    - This rasterizes the axis contents (the result is an image, not vector art).
-    - Colorbars or other axes that live outside the target `ax` are left alone.
-    - Works reliably for full grids or arbitrary subsets.
-    """
-    fig = ax.figure
-
-    # Force draw so renderer & sizes are correct
-    fig.canvas.draw()
-    renderer = fig.canvas.get_renderer()
-
-    # Get pixel bbox of the axes (in display coordinates) via renderer-aware call
-    bbox = ax.get_window_extent(renderer=renderer)  # Bbox in display (pixel) coords
-
-    # Grab the full figure RGBA buffer (H x W x 4)
-    buf = np.asarray(renderer.buffer_rgba())  # returns an (H,W,4) uint8 array
-
-    H, W = buf.shape[0], buf.shape[1]
-
-    # Convert bbox to integer pixel coords and crop.
-    # Note: Bbox y coords are in display coordinates with origin at lower-left.
-    x0, x1 = int(np.floor(bbox.x0)), int(np.ceil(bbox.x1))
-    y0, y1 = int(np.floor(bbox.y0)), int(np.ceil(bbox.y1))
-
-    # Convert to numpy row indices (origin at top-left)
-    row0 = max(0, H - y1)
-    row1 = min(H, H - y0)
-    col0 = max(0, x0)
-    col1 = min(W, x1)
-
-    if row1 <= row0 or col1 <= col0:
-        raise RuntimeError("Calculated zero-size axes crop — renderer/coords inconsistent.")
-
-    axes_img = buf[row0:row1, col0:col1, :].copy()  # copy to be safe
-
-    # Rotate 90 degrees clockwise. np.rot90 rotates counterclockwise, so use k=-1 (or k=3).
-    rotated = np.rot90(axes_img, k=-1)
-
-    # Create a new axes in the same figure position (figure coords) and show the rotated image.
-    # We must compute the original axes position in figure coordinates:
-    fig_x0, fig_y0, fig_w, fig_h = ax.get_position().bounds
-
-    # Add overlaid axes and show the rotated image
-    new_ax = fig.add_axes([fig_x0, fig_y0, fig_w, fig_h], anchor='C')  # same place
-    new_ax.imshow(rotated, origin='upper', aspect='auto')
-    new_ax.set_axis_off()
-
-    # Remove the original axes (so only rotated image remains)
-    fig.delaxes(ax)
-
-    # Force redraw
-    fig.canvas.draw()
-    return new_ax
 
 def main():
 
@@ -116,17 +52,22 @@ def main():
     # get SLURM environment variables, flags
     slurm_job_name = os.environ.get("SLURM_JOB_NAME", "job")
     slurm_job_id = os.environ.get("SLURM_JOB_ID", "0")
-    SLURM_CPUS_PER_TASK = int(os.environ.get("SLURM_CPUS_PER_TASK", 1))
+    slurm_cpus = int(os.environ.get("SLURM_CPUS_PER_TASK", 1))
+    slurm_mem = int(os.environ.get("SLURM_MEM_PER_NODE", "0"))
     scalene_flag = os.environ.get("SCALENE_PROFILE", "True").lower() in ("True")
 
     if scalene_flag:
         # begin memory profiling
         scalene_profiler.start()
 
+    n_workers=3
+    mem_gb = slurm_mem / 1024
+    worker_mem = f"{0.9 * mem_gb / n_workers:.1f}GB"
+    logger.info(f'{mem_gb}')
     cluster = LocalCluster(
-        n_workers=2,
-        threads_per_worker = 8,
-        memory_limit="120GB",
+        n_workers=n_workers,
+        threads_per_worker = slurm_cpus // n_workers,
+        memory_limit=worker_mem,
         dashboard_address=None)
     client = Client(cluster)
     logger.info(client)
@@ -136,14 +77,13 @@ def main():
     """
     logger.info('Set params')
 
-    # set tile width
+    # set tile width, temporal averaging
     tile_width = 0.5
-
     time_window = int(24*30) # temporal resolution, currently set to 1 month
 
     # exp name, data dir, and data
     data_dir = '/orcd/data/abodner/002/cody/MLD_per_pixel'
-    data = 'MLD__Kuroshio_1.0_(0,720)'
+    data = 'MLD_Kuroshio_15.0_(0,8640)'
     exp_name = str(data) + f'_{tile_width}' + f'_{time_window}'
 
     logger.info(f'Experiment: {exp_name}')
@@ -156,10 +96,12 @@ def main():
     MLD_per_pixel = xr.open_zarr(f'{data_dir}/{data}.zarr',consolidated=False)
 
     # chunk
-    MLD_per_pixel = MLD_per_pixel.chunk({'time':time_window,'i':96,'j':96})
+    MLD_per_pixel = MLD_per_pixel.chunk({'time':time_window,'i':384,'j':384})
+
     """
     4. Temporally coarsen, subset into tiles
     """
+
     MLD_per_pixel = MLD_per_pixel.coarsen(time=time_window, boundary="trim").mean()
     area = MLD_per_pixel.rA
 

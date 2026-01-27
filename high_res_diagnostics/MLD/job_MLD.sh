@@ -3,9 +3,9 @@
 #SBATCH --job-name=MLD
 #SBATCH -N 1
 #SBATCH --ntasks-per-node=1
-#SBATCH --mem=250GB
+#SBATCH --mem=300GB
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=16
+#SBATCH --cpus-per-task=32
 #SBATCH --time=00-08:00:00
 #SBATCH -o logs/%x-%j.out
 #SBATCH -e logs/%x-%j.out
@@ -48,8 +48,8 @@ if [ "$scalene" = "True" ]; then
 
 else
     # run the script without memory profiling
-    #uv run "$location/MLD_per_tile.py"
-    uv run "$location/MLD_per_pixel.py"
+    uv run "$location/MLD_per_tile.py"
+    #uv run "$location/MLD_per_pixel.py"
 fi
 
 echo "======== job complete ========"

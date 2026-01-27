@@ -96,17 +96,23 @@ def main():
     # get SLURM environment variables, flags
     slurm_job_name = os.environ.get("SLURM_JOB_NAME", "job")
     slurm_job_id = os.environ.get("SLURM_JOB_ID", "0")
-    SLURM_CPUS_PER_TASK = int(os.environ.get("SLURM_CPUS_PER_TASK", 1))
+    slurm_cpus = int(os.environ.get("SLURM_CPUS_PER_TASK", 1))
+    slurm_mem = int(os.environ.get("SLURM_MEM_PER_NODE", "0"))
     scalene_flag = os.environ.get("SCALENE_PROFILE", "True").lower() in ("True")
 
     if scalene_flag:
         # begin memory profiling
         scalene_profiler.start()
+    
 
+    n_workers=2
+    mem_gb = slurm_mem / 1024
+    logger.info(f'{mem_gb}')
+    worker_mem = f"{0.9 * mem_gb / n_workers:.1f}GB"
     cluster = LocalCluster(
-        n_workers=2,
-        threads_per_worker = 8,
-        memory_limit="120GB",
+        n_workers=n_workers,
+        threads_per_worker = slurm_cpus // n_workers,
+        memory_limit=worker_mem,
         dashboard_address=None)
     client = Client(cluster)
     logger.info(client)

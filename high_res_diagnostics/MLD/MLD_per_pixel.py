@@ -91,20 +91,27 @@ def main():
     1. Initialize dask, scalene if flagged
     """
 
+
     # get SLURM environment variables, flags
     slurm_job_name = os.environ.get("SLURM_JOB_NAME", "job")
     slurm_job_id = os.environ.get("SLURM_JOB_ID", "0")
-    SLURM_CPUS_PER_TASK = int(os.environ.get("SLURM_CPUS_PER_TASK", 1))
+    slurm_cpus = int(os.environ.get("SLURM_CPUS_PER_TASK", 1))
+    slurm_mem = int(os.environ.get("SLURM_MEM_PER_NODE", "0"))
     scalene_flag = os.environ.get("SCALENE_PROFILE", "True").lower() in ("True")
 
     if scalene_flag:
         # begin memory profiling
         scalene_profiler.start()
+    
 
+    n_workers=3
+    mem_gb = slurm_mem / 1024
+    logger.info(f'{mem_gb}')
+    worker_mem = f"{0.9 * mem_gb / n_workers:.1f}GB"
     cluster = LocalCluster(
-        n_workers=2,
-        threads_per_worker = 8,
-        memory_limit="120GB",
+        n_workers=n_workers,
+        threads_per_worker = slurm_cpus // n_workers,
+        memory_limit=worker_mem,
         dashboard_address=None)
     client = Client(cluster)
     logger.info(client)
@@ -136,7 +143,7 @@ def main():
 
     # set temporal params
     t_0 = 0
-    t_1 = int(24*429)#int(429 * 24)
+    t_1 = int(24*30*12)# 1 yr 
 
     # exp name, data_dir
     exp_name = str(slurm_job_name) + f'_{loc}' + f'_{degree_extent}' + f'_({t_0},{t_1})'
@@ -158,16 +165,17 @@ def main():
     lon_center=lon_center,
     degree_extent=degree_extent)
 
-    subs = []
-    for face, (j0, j1, i0, i1) in boxes.items():
-        subs.append(
-            LLC_full.isel(face=face, j=slice(j0, j1), i=slice(i0, i1))
-        )
+    face = list(boxes.keys())[0]
+    j0,j1,i0,i1 = boxes[face]
 
-    LLC_sub = xr.concat(subs, dim="face").isel(face=0) # can't handle multiple faces currently :(
+    LLC_sub = LLC_full.isel(
+        face=face,
+        j=slice(j0,j1),
+        i=slice(i0,i1),
+        time=slice(t_0,t_1),)
 
     # select temporal extent, chunk: k should be full-column per chunk for .min(dim="k"
-    LLC_sub = LLC_sub.isel(time=slice(t_0,t_1)).chunk({'time': 96,'k': -1,'i': 96, 'j': 96})
+    LLC_sub = LLC_sub.isel(time=slice(t_0,t_1)).chunk({'time': 72,'k': -1,'i': 384, 'j': 384})
 
     """
     4. Follow code from https://github.com/abodner/submeso_param_net/blob/main/scripts/preprocess_llc4320/preprocess.py
@@ -190,6 +198,9 @@ def main():
     """
     5. Save as zarr
     """
+    logger.info(f'Save as zarr')
+
+    MLD_pixels = MLD_pixels.persist()
 
     ds_out = xr.Dataset({
         "MLD_pixels": MLD_pixels,
