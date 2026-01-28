@@ -27,8 +27,7 @@ from scalene import scalene_profiler
 import os
 
 # calculate mld per column
-# ref dens
-rho0 = 1025 #kg/m^3
+rho0 = 1025 #ref den in kg/m^3
 kref = 6 # 10m
 dens_thres = 0.03 
 def calc_MLD_col(theta, salt, z, rho0=rho0, kref=kref, dens_thres=dens_thres):
@@ -72,7 +71,7 @@ def main():
         scalene_profiler.start()
     
 
-    n_workers=6
+    n_workers=2
     mem_gb = slurm_mem / 1024
     logger.info(f'{mem_gb}GB')
     worker_mem = f"{0.9 * mem_gb / n_workers:.1f}GB"
@@ -96,8 +95,12 @@ def main():
     t_0 = 432
     t_1 = t_0 + (365*24) 
 
+    # horizontal subsets
+    h_0 = 2000
+    h_1 = h_0 + 540
+
     # exp name, data_dir
-    exp_name = str(slurm_job_name) + f'_face{face}' + f'_({t_0},{t_1})'
+    exp_name = str(slurm_job_name) + f'_face{face}' + f'_({t_0},{t_1})'+f'_({h_0,h_1})'
     data_dir = '/orcd/data/abodner/002/cody/MLD_per_pixel'
 
     logger.info(f'Experiment: {exp_name}')
@@ -107,10 +110,10 @@ def main():
     """
 
     # open LLC4320 and chunk: k should be full-column per chunk for .min(dim="k")
-    LLC_face = xr.open_zarr('/orcd/data/abodner/003/LLC4320/LLC4320',consolidated=False, chunks={"time": 96,"k": -1,"i": 144,"j": 144,},)
+    LLC_face = xr.open_zarr('/orcd/data/abodner/003/LLC4320/LLC4320',consolidated=False, chunks={"time": 96,"k": -1,"i": 384,"j": 384,},)
 
     # select temporal extent, select face
-    LLC_sub = LLC_face.isel(time=slice(t_0,t_1), face = face)
+    LLC_sub = LLC_face.isel(time=slice(t_0,t_1), face = face, i = slice(h_0,h_1), j = slice(h_0,h_1))[['Theta','Salt','Z','XC','YC']]
 
     """
     4. Calculate MLD per pixel
@@ -135,10 +138,10 @@ def main():
     logger.info(f'Save as zarr')
 
     #rechunk
-    MLD_pixels = MLD_pixels.chunk({"time": 96,"i": 144,"j": 144,})
+    MLD_pixels = MLD_pixels.chunk({"time": 96,"i": 384,"j": 384,})
 
     # define chunk encoding for zarr - match MDL_pixel chunking
-    encoding = {"MLD_pixels": {"chunks": (96, 144, 144)},}
+    encoding = {"MLD_pixels": {"chunks": (96, 384, 384)},}
 
 
     ds_out = xr.Dataset({
