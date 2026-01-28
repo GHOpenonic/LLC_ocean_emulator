@@ -20,17 +20,15 @@ The methods are as follows:
 # dependencies
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import xarray as xr
-import zarr
-import dask
 from dask.distributed import Client, LocalCluster
-from fastjmd95 import jmd95numba 
 from scalene import scalene_profiler
 import os
 import pathlib
-import matplotlib.pyplot as plt
 from pathlib import Path
 from xhistogram.xarray import histogram
+
 
 import logging
 logging.basicConfig(
@@ -60,10 +58,10 @@ def main():
         # begin memory profiling
         scalene_profiler.start()
 
-    n_workers=3
+    n_workers=8
     mem_gb = slurm_mem / 1024
     worker_mem = f"{0.9 * mem_gb / n_workers:.1f}GB"
-    logger.info(f'{mem_gb}')
+    logger.info(f'{mem_gb}GB')
     cluster = LocalCluster(
         n_workers=n_workers,
         threads_per_worker = slurm_cpus // n_workers,
@@ -79,12 +77,11 @@ def main():
 
     # set tile width, temporal averaging
     tile_width = 0.5
-    time_window = int(24*30) # temporal resolution, currently set to 1 month
 
     # exp name, data dir, and data
     data_dir = '/orcd/data/abodner/002/cody/MLD_per_pixel'
-    data = 'MLD_Kuroshio_15.0_(0,8640)'
-    exp_name = str(data) + f'_{tile_width}' + f'_{time_window}'
+    data = 'MLD_face7_(432,9192)'
+    exp_name = str(data) + f'_{tile_width}'
 
     logger.info(f'Experiment: {exp_name}')
 
@@ -95,23 +92,27 @@ def main():
     # open MLD_per_pixel
     MLD_per_pixel = xr.open_zarr(f'{data_dir}/{data}.zarr',consolidated=False)
 
-    # chunk
-    MLD_per_pixel = MLD_per_pixel.chunk({'time':time_window,'i':384,'j':384})
-
     """
     4. Temporally coarsen, subset into tiles
     """
 
-    MLD_per_pixel = MLD_per_pixel.coarsen(time=time_window, boundary="trim").mean()
-    area = MLD_per_pixel.rA
+    MLD_per_pixel = MLD_per_pixel.resample(time="MS").mean() # divide into monthly, take the mean
+
+    # chunk
+    MLD_per_pixel = MLD_per_pixel.chunk({'time':1,'i':384,'j':384}) # monthly chunks
 
     # subset into tiles, weight by surface area
     YC = MLD_per_pixel.YC
     XC = MLD_per_pixel.XC
-    area = MLD_per_pixel.rA
+    area = MLD_per_pixel.rA.chunk({'i':384,'j':384})
 
-    lat_edges = np.arange(YC.values.min(), YC.values.max() + tile_width, tile_width)
-    lon_edges = np.arange(XC.values.min(), XC.values.max() + tile_width, tile_width)
+    lat_min = float(YC.min())
+    lat_max = float(YC.max())
+    lon_min = float(XC.min())
+    lon_max = float(XC.max())
+
+    lat_edges = np.arange(lat_min, lat_max + tile_width, tile_width)
+    lon_edges = np.arange(lon_min, lon_max + tile_width, tile_width)
 
     num = histogram(
         YC,
@@ -130,14 +131,7 @@ def main():
     MLD_tiles = num / den
 
     """
-    5. Compute plotting reqs before figure production
-    """
-
-    logger.info('Compute plotting reqs')
-    MLD_tiles = MLD_tiles.compute()
-
-    """
-    6. Produce figures: time-averaged MLD heatmap with pixels=tile_width
+    5. Produce figures: time-averaged MLD heatmap with pixels=tile_width
     """
     logger.info('Produce figure')
 
@@ -148,19 +142,21 @@ def main():
     outdir.mkdir(parents=True, exist_ok=True)
 
     for t in MLD_tiles.time.values:
+        # select and compute month
+        MLD_tiles_sel = MLD_tiles.sel(time=t).compute()
+
         fig, ax = plt.subplots(figsize=(6,5))
 
-        MLD_tiles_sel = MLD_tiles.sel(time=t)
-
-        contours = plt.imshow(MLD_tiles_sel)#ax.contourf(MLD_map_sel.i, MLD_map_sel.j, vals, cmap="Spectral_r",vmin=np.min(vals),vmax=np.max(vals), levels = 5)
+        contours = ax.imshow(MLD_tiles_sel)#ax.contourf(MLD_map_sel.i, MLD_map_sel.j, vals, cmap="Spectral_r",vmin=np.min(vals),vmax=np.max(vals), levels = 5)
 
         plt.colorbar(contours, ax = ax, label="MLD (m)")
 
-        ax.set_title(f"{exp_name}" + f"_t-{t}", fontsize=14)
+        ax.set_title(f"{exp_name} – {pd.to_datetime(t).strftime('%B %Y')}", fontsize=14)
 
        # rotate_axes_90_clockwise(ax)
 
-        fig.savefig(outdir / str(f"_t-{t}.png"), dpi=200, bbox_inches="tight")
+        month_str = pd.to_datetime(t).strftime('%Y-%m')
+        fig.savefig(outdir / f"{month_str}.png", dpi=200, bbox_inches="tight")
         plt.close()
 
 

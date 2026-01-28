@@ -1,7 +1,7 @@
 """
-This script calculates mixed layer depth (MLD) per pixel of a spatiotemporal segment of LLC4320 data using MLD methods in:
+This script calculates mixed layer depth (MLD) per pixel on a face of LLC4320 data using MLD methods in:
 https://github.com/abodner/submeso_param_net/blob/main/scripts/preprocess_llc4320/preprocess.py
-It is the first of two to calculate temporally averaged MLD in spatial tiles
+It is the first of two to calculate temporally averaged MLD on llc faces
 
 The methods are as follows:
 
@@ -18,18 +18,13 @@ The methods are as follows:
 0. Import dependencies, define helper functions
 """
 # dependencies
-import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
 import zarr
-import dask
 from dask.distributed import Client, LocalCluster
 from fastjmd95 import jmd95numba 
 from scalene import scalene_profiler
 import os
-import pathlib
-import matplotlib.pyplot as plt
-from pathlib import Path
 
 import logging
 logging.basicConfig(
@@ -38,50 +33,6 @@ logging.basicConfig(
     force=True
 )
 logger = logging.getLogger(__name__)
-
-# define functions
-# build i,j,face index for a lat/lon spatial box about central lat/lon coord for llc4320
-def llc_latlon_box_indices(
-    LLC,
-    lat_center,
-    lon_center,
-    degree_extent):
-
-    half = degree_extent / 2.0
-
-    lat_min = lat_center - half
-    lat_max = lat_center + half
-    lon_min = lon_center - half
-    lon_max = lon_center + half
-
-    XC = LLC["XC"]
-    YC = LLC["YC"]
-
-    face_boxes = {}
-
-    for face in XC.face.values:
-        xc = XC.sel(face=face)
-        yc = YC.sel(face=face)
-
-        # mask points inside the lat/lon box
-        mask = (
-            (yc >= lat_min) & (yc <= lat_max) &
-            (xc >= lon_min) & (xc <= lon_max))
-
-        if not mask.any():
-            continue
-
-        # get i/j indices where mask is True
-        jj, ii = np.where(mask.values)
-
-        j_start = int(jj.min())
-        j_end   = int(jj.max()) + 1
-        i_start = int(ii.min())
-        i_end   = int(ii.max()) + 1
-
-        face_boxes[int(face)] = (j_start, j_end, i_start, i_end)
-
-    return face_boxes
 
 def main():
 
@@ -122,31 +73,13 @@ def main():
     logger.info('Set params')
 
     # set location
-    # ------------ 1 deg Kuroshio Extension centered @ 39°N, 158°E
-    # loc = 'Kuroshio'
-    # lat_center = 39
-    # lon_center = 158
-    # degree_extent = 15.0
-
-
-    # ------------ 1 deg Agulhas Current centered @ 43°S, 14°E
-    # loc = 'Agulhas'
-    # lat_center = -43
-    # lon_center = 14
-    # degree_extent = 1.0
-
-    # ------------ 1 deg Gulf Stream centered @ 43°S, 14°E
-    # loc = 'Gulf'
-    # lat_center = 39
-    # lon_center = -66
-    # degree_extent = 1.0
-
+    face = 7
     # set temporal params
     t_0 = 432
     t_1 = t_0 + (365*24) 
 
     # exp name, data_dir
-    exp_name = str(slurm_job_name) + f'_{loc}' + f'_{degree_extent}' + f'_({t_0},{t_1})'
+    exp_name = str(slurm_job_name) + f'_face{face}' + f'_({t_0},{t_1})'
     data_dir = '/orcd/data/abodner/002/cody/MLD_per_pixel'
 
     logger.info(f'Experiment: {exp_name}')
@@ -156,26 +89,10 @@ def main():
     """
 
     # open LLC4320
-    LLC_full = xr.open_zarr('/orcd/data/abodner/003/LLC4320/LLC4320',consolidated=False)
-
-    # select [i,j] spatial box, face, temporal subset
-    boxes = llc_latlon_box_indices(
-    LLC_full,
-    lat_center=lat_center,
-    lon_center=lon_center,
-    degree_extent=degree_extent)
-
-    face = list(boxes.keys())[0]
-    j0,j1,i0,i1 = boxes[face]
-
-    LLC_sub = LLC_full.isel(
-        face=face,
-        j=slice(j0,j1),
-        i=slice(i0,i1),
-        time=slice(t_0,t_1),)
+    LLC_face = xr.open_zarr('/orcd/data/abodner/003/LLC4320/LLC4320',consolidated=False).isel(face=face)
 
     # select temporal extent, chunk: k should be full-column per chunk for .min(dim="k"
-    LLC_sub = LLC_sub.isel(time=slice(t_0,t_1)).chunk({'time': 72,'k': -1,'i': 384, 'j': 384})
+    LLC_sub = LLC_face.isel(time=slice(t_0,t_1)).chunk({'time': 240,'k': -1,'i': 540, 'j': 540})
 
     """
     4. Follow code from https://github.com/abodner/submeso_param_net/blob/main/scripts/preprocess_llc4320/preprocess.py
@@ -188,19 +105,20 @@ def main():
     # with the reference pressure of 0 dbar and ρ0 = 1000 kg m−3
     sigma0 = jmd95numba.rho(LLC_sub.Salt, LLC_sub.Theta,0) - rho0
 
+    sigma0 = sigma0.persist()
+
     # sigma0 at 10m depth for reference, no broadcasting
     sigma0_10m = sigma0.isel(k=6)
     delta_sigma = sigma0 - sigma0_10m
 
     MLD_pixels = LLC_sub.Z.broadcast_like(sigma0).where(delta_sigma<=0.03).min(dim="k",skipna=True)
     area = LLC_sub.rA
+    area = area.chunk({'i':384,'j':384})
 
     """
     5. Save as zarr
     """
     logger.info(f'Save as zarr')
-
-    MLD_pixels = MLD_pixels.persist()
 
     ds_out = xr.Dataset({
         "MLD_pixels": MLD_pixels,

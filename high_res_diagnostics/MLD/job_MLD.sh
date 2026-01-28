@@ -3,13 +3,15 @@
 #SBATCH --job-name=MLD
 #SBATCH -N 1
 #SBATCH --ntasks-per-node=1
-#SBATCH --mem=300GB
+#SBATCH --mem=700GB
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=32
+#SBATCH --cpus-per-task=40
 #SBATCH --time=00-08:00:00
 #SBATCH -o logs/%x-%j.out
 #SBATCH -e logs/%x-%j.out
 #SBATCH --hint=nomultithread
+
+start=$(date +%s)
 
 # load module
 module load miniforge/24.3.0-0
@@ -17,8 +19,17 @@ module load miniforge/24.3.0-0
 # set location of script
 location=/home/codycruz/LLC_ocean_emulator/high_res_diagnostics/MLD
 
+# Job type Flag ===========================================================
+# select which script is run
+job_type="per_pixel_face"
+#job_type="per_pixel"
+#job_type="per_tile"
+#job_type="ts"
+
+echo "Job:$job_type"
+
 # Memory profiling flag =================================================
-scalene=False # True or False
+scalene=True # True or False
 export SCALENE_PROFILE=True
 
 # activate virtual environment
@@ -40,7 +51,7 @@ if [ "$scalene" = "True" ]; then
     uv run python -m scalene run \
         --cpu-only \
         -o "$JSON_OUT" \
-        "$location/MLD_ts.py"
+        "$location/MLD_${job_type}.py"
 
     # produce an html of the JSON profile
     cd "$location/scalene/${SLURM_JOB_NAME}-${SLURM_JOB_ID}"
@@ -48,8 +59,13 @@ if [ "$scalene" = "True" ]; then
 
 else
     # run the script without memory profiling
-    uv run "$location/MLD_per_tile.py"
-    #uv run "$location/MLD_per_pixel.py"
+    uv run "$location/MLD_${job_type}.py"
 fi
+
+
+end=$(date +%s)
+runtime=$((end-start))
+printf "Total runtime: %02d:%02d:%02d\n" \
+  $((runtime/3600)) $((runtime%3600/60)) $((runtime%60))
 
 echo "======== job complete ========"

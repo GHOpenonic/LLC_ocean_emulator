@@ -29,8 +29,8 @@ from fastjmd95 import jmd95numba
 from scalene import scalene_profiler
 import os
 import pathlib
-import matplotlib.pyplot as plt
 from pathlib import Path
+import matplotlib.dates as mdates
 
 import logging
 logging.basicConfig(
@@ -104,7 +104,7 @@ def main():
         # begin memory profiling
         scalene_profiler.start()
     
-
+    # initialize dask
     n_workers=2
     mem_gb = slurm_mem / 1024
     logger.info(f'{mem_gb}')
@@ -124,10 +124,10 @@ def main():
 
     # set location
     # ------------ 1 deg Kuroshio Extension centered @ 39°N, 158°E
-    loc = 'Kuroshio'
-    lat_center = 39
-    lon_center = 158
-    degree_extent = 1.0
+    # loc = 'Kuroshio'
+    # lat_center = 39
+    # lon_center = 158
+    # degree_extent = 1.0
 
     # ------------ 1 deg Agulhas Current centered @ 43°S, 14°E
     # loc = 'Agulhas'
@@ -136,17 +136,18 @@ def main():
     # degree_extent = 1.0
 
     # ------------ 1 deg Gulf Stream centered @ 43°S, 14°E
-    # loc = 'Gulf'
-    # lat_center = 39
-    # lon
-    #_center = -66
-    # degree_extent = 1.0
+    loc = 'Gulf'
+    lat_center = 39
+    lon_center = -66
+    degree_extent = 1.0
+
+
     # set temporal extent
-    t_0 = 0
-    t_1 = int(429 * 24)
+    t_0 = 432
+    t_1 = t_0 + (365*24) 
 
     # exp name
-    exp_name = str(slurm_job_name) + f'_{loc}' + f'_{degree_extent}deg'
+    exp_name = str(slurm_job_name) + f'_{loc}' + f'_{degree_extent}_ts'
 
     logger.info(f'Experiment: {exp_name}')
 
@@ -211,7 +212,10 @@ def main():
     outdir = Path(__file__).resolve().parent
     fig, ax = plt.subplots(figsize=(14, 6))
 
-    ax.plot(MLD.time, MLD.values, color="black", label="MLD", linewidth=2)
+    ax.plot(MLD['time'], MLD.values, color="black", label="MLD", linewidth=2)
+
+    ax.xaxis.set_major_locator(mdates.MonthLocator())
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%B'))
 
     ax.set_title(f"{exp_name}", fontsize=18)
     ax.set_xlabel("Time", fontsize=14)
