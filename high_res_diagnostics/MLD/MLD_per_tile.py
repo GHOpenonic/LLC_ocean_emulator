@@ -89,8 +89,8 @@ def main():
     3. Open MLD_per_pixel dataset
     """
 
-    # open MLD_per_pixel
-    MLD_per_pixel = xr.open_zarr(f'{data_dir}/{data}.zarr',consolidated=False)
+    # open MLD_per_pixel, chunk
+    MLD_per_pixel = xr.open_zarr(f'{data_dir}/{data}.zarr',consolidated=False, chunks={"time": 240,"k": -1,"i": 540,"j": 540,},)
 
     """
     4. Temporally coarsen, subset into tiles
@@ -98,7 +98,7 @@ def main():
 
     MLD_per_pixel = MLD_per_pixel.resample(time="MS").mean() # divide into monthly, take the mean
 
-    # chunk
+    # rechunk
     MLD_per_pixel = MLD_per_pixel.chunk({'time':1,'i':384,'j':384}) # monthly chunks
 
     # subset into tiles, weight by surface area

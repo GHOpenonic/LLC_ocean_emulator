@@ -55,7 +55,7 @@ def main():
         scalene_profiler.start()
     
 
-    n_workers=3
+    n_workers=4
     mem_gb = slurm_mem / 1024
     logger.info(f'{mem_gb}GB')
     worker_mem = f"{0.9 * mem_gb / n_workers:.1f}GB"
@@ -63,7 +63,8 @@ def main():
         n_workers=n_workers,
         threads_per_worker = slurm_cpus // n_workers,
         memory_limit=worker_mem,
-        dashboard_address=None)
+        dashboard_address=None,
+        local_directory="/tmp")
     client = Client(cluster)
     logger.info(client)
 
@@ -88,11 +89,11 @@ def main():
     3. open and subset LLC4320
     """
 
-    # open LLC4320
-    LLC_face = xr.open_zarr('/orcd/data/abodner/003/LLC4320/LLC4320',consolidated=False).isel(face=face)
+    # open LLC4320 and chunk: k should be full-column per chunk for .min(dim="k")
+    LLC_face = xr.open_zarr('/orcd/data/abodner/003/LLC4320/LLC4320',consolidated=False, chunks={"time": 240,"k": -1,"i": 540,"j": 540,},)
 
-    # select temporal extent, chunk: k should be full-column per chunk for .min(dim="k"
-    LLC_sub = LLC_face.isel(time=slice(t_0,t_1)).chunk({'time': 240,'k': -1,'i': 540, 'j': 540})
+    # select temporal extent, select face
+    LLC_sub = LLC_face.isel(time=slice(t_0,t_1), face = face)
 
     """
     4. Follow code from https://github.com/abodner/submeso_param_net/blob/main/scripts/preprocess_llc4320/preprocess.py
@@ -105,20 +106,22 @@ def main():
     # with the reference pressure of 0 dbar and ρ0 = 1000 kg m−3
     sigma0 = jmd95numba.rho(LLC_sub.Salt, LLC_sub.Theta,0) - rho0
 
-    sigma0 = sigma0.persist()
-
     # sigma0 at 10m depth for reference, no broadcasting
     sigma0_10m = sigma0.isel(k=6)
     delta_sigma = sigma0 - sigma0_10m
 
-    MLD_pixels = LLC_sub.Z.broadcast_like(sigma0).where(delta_sigma<=0.03).min(dim="k",skipna=True)
+    MLD_pixels = LLC_sub.Z.where(delta_sigma <= 0.03).min("k")
     area = LLC_sub.rA
-    area = area.chunk({'i':384,'j':384})
 
     """
     5. Save as zarr
     """
     logger.info(f'Save as zarr')
+
+    encoding = {"MLD_pixels": {"chunks": (240, 540, 540)},}
+
+    #rechunk
+    MLD_pixels = MLD_pixels.chunk({"time": 240,"i": 540,"j": 540,})
 
     ds_out = xr.Dataset({
         "MLD_pixels": MLD_pixels,
@@ -126,7 +129,7 @@ def main():
         "XC": LLC_sub["XC"],
         "YC": LLC_sub["YC"],})
 
-    ds_out.to_zarr(store = f"{data_dir}/{exp_name}.zarr",mode="w")
+    ds_out.to_zarr(store = f"{data_dir}/{exp_name}.zarr",mode="w", encoding = encoding)
 
     if scalene_flag:
         # stop memory profiling
