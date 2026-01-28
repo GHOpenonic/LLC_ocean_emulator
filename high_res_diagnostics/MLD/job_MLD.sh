@@ -3,9 +3,9 @@
 #SBATCH --job-name=MLD
 #SBATCH -N 1
 #SBATCH --ntasks-per-node=1
-#SBATCH --mem=700GB
+#SBATCH --mem=990GB
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=40
+#SBATCH --cpus-per-task=24
 #SBATCH --time=00-08:00:00
 #SBATCH -o logs/%x-%j.out
 #SBATCH -e logs/%x-%j.out

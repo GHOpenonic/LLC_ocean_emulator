@@ -26,6 +26,23 @@ from fastjmd95 import jmd95numba
 from scalene import scalene_profiler
 import os
 
+# calculate mld per column
+# ref dens
+rho0 = 1025 #kg/m^3
+kref = 6 # 10m
+dens_thres = 0.03 
+def calc_MLD_col(theta, salt, z, rho0=rho0, kref=kref, dens_thres=dens_thres):
+    # theta, salt, z are (k,)
+
+    rho = jmd95numba.rho(salt, theta, 0) - rho0
+    drho = rho - rho[kref]
+
+    mask = drho <= dens_thres
+
+    if not np.any(mask):
+        return np.nan
+    return np.min(z[mask])
+
 import logging
 logging.basicConfig(
     level=logging.INFO,
@@ -55,7 +72,7 @@ def main():
         scalene_profiler.start()
     
 
-    n_workers=4
+    n_workers=6
     mem_gb = slurm_mem / 1024
     logger.info(f'{mem_gb}GB')
     worker_mem = f"{0.9 * mem_gb / n_workers:.1f}GB"
@@ -90,27 +107,26 @@ def main():
     """
 
     # open LLC4320 and chunk: k should be full-column per chunk for .min(dim="k")
-    LLC_face = xr.open_zarr('/orcd/data/abodner/003/LLC4320/LLC4320',consolidated=False, chunks={"time": 240,"k": -1,"i": 540,"j": 540,},)
+    LLC_face = xr.open_zarr('/orcd/data/abodner/003/LLC4320/LLC4320',consolidated=False, chunks={"time": 96,"k": -1,"i": 144,"j": 144,},)
 
     # select temporal extent, select face
     LLC_sub = LLC_face.isel(time=slice(t_0,t_1), face = face)
 
     """
-    4. Follow code from https://github.com/abodner/submeso_param_net/blob/main/scripts/preprocess_llc4320/preprocess.py
-        to calculate the MLD per pixel
+    4. Calculate MLD per pixel
     """
-    # reference density 
-    rho0 = 1025 #kg/m^3
 
-    # potential density anomaly 
-    # with the reference pressure of 0 dbar and ρ0 = 1000 kg m−3
-    sigma0 = jmd95numba.rho(LLC_sub.Salt, LLC_sub.Theta,0) - rho0
+    MLD_pixels = xr.apply_ufunc( # use ufunc along single columns to manage memory
+        calc_MLD_col,
+        LLC_sub.Theta,
+        LLC_sub.Salt,
+        LLC_sub.Z,
+        input_core_dims=[["k"], ["k"], ["k"]],
+        output_core_dims=[[]],
+        vectorize=True,
+        dask="parallelized",
+        output_dtypes=[np.float32],)
 
-    # sigma0 at 10m depth for reference, no broadcasting
-    sigma0_10m = sigma0.isel(k=6)
-    delta_sigma = sigma0 - sigma0_10m
-
-    MLD_pixels = LLC_sub.Z.where(delta_sigma <= 0.03).min("k")
     area = LLC_sub.rA
 
     """
@@ -118,10 +134,12 @@ def main():
     """
     logger.info(f'Save as zarr')
 
-    encoding = {"MLD_pixels": {"chunks": (240, 540, 540)},}
-
     #rechunk
-    MLD_pixels = MLD_pixels.chunk({"time": 240,"i": 540,"j": 540,})
+    MLD_pixels = MLD_pixels.chunk({"time": 96,"i": 144,"j": 144,})
+
+    # define chunk encoding for zarr - match MDL_pixel chunking
+    encoding = {"MLD_pixels": {"chunks": (96, 144, 144)},}
+
 
     ds_out = xr.Dataset({
         "MLD_pixels": MLD_pixels,
