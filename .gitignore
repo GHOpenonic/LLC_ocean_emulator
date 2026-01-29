@@ -25,3 +25,7 @@ logs/
 
 # Ignore scalene output folder
 high_res_diagnostics/VHF/scalene/
+
+# ignore videos/frames
+high_res_diagnostics/MLD/high-res-video/frames
+high_res_diagnostics/MLD/high-res-video/videos
