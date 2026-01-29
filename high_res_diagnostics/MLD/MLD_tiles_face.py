@@ -22,6 +22,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 import matplotlib.pyplot as plt
+import cmocean
 import zarr
 from dask.distributed import Client, LocalCluster
 from fastjmd95 import jmd95numba 
@@ -98,11 +99,11 @@ def main():
     face = 7
     # set temporal params
     t_0 = 432
-    t_1 = t_0 + 24 #(365*24) 
+    t_1 = t_0 + 24#(365*24) 
 
     
     # set tile width, temporal averaging
-    tile_width = 0.25
+    tile_width = 0.5
 
     # horizontal subsets
     h_0 = 2000
@@ -118,11 +119,52 @@ def main():
     3. open and subset LLC4320
     """
 
+
     # open LLC4320 and chunk: k should be full-column per chunk for .min(dim="k")
     LLC_face = xr.open_zarr('/orcd/data/abodner/003/LLC4320/LLC4320',consolidated=False, chunks={"time": 96,"k": -1,"i": 384,"j": 384,},)
 
     # select temporal extent, select face
-    LLC_sub = LLC_face.isel(time=slice(t_0,t_1), face = face, i = slice(h_0,h_1), j = slice(h_0,h_1))[['Theta','Salt','Z','XC','YC']]
+    LLC_sub = LLC_face.isel(time=slice(t_0,t_1), face = face, i = slice(h_0,h_1), j = slice(h_0,h_1))[['Theta','Salt','Z','XC','YC','rA']]
+
+    """
+    SUBSET INTO TILES
+    """
+    # subset into tiles, weight by surface area
+    YC = LLC_sub.YC
+    XC = LLC_sub.XC
+    area = LLC_sub.rA.chunk({'i':384,'j':384})
+
+    lat_min = float(YC.min())
+    lat_max = float(YC.max())
+    lon_min = float(XC.min())
+    lon_max = float(XC.max())
+
+    lat_edges = np.arange(lat_min, lat_max + tile_width, tile_width)
+    lon_edges = np.arange(lon_min, lon_max + tile_width, tile_width)
+
+    num_theta = histogram(
+        YC,
+        XC,
+        bins=[lat_edges, lon_edges],
+        weights=LLC_sub['Theta'] * area,
+        dim=("j", "i"))
+
+    num_salt = histogram(
+        YC,
+        XC,
+        bins=[lat_edges, lon_edges],
+        weights=LLC_sub['Salt'] * area,
+        dim=("j", "i"))
+
+    den = histogram(
+        YC,
+        XC,
+        bins=[lat_edges, lon_edges],
+        weights=area,
+        dim=("j", "i"))
+
+    MLD_tiles_Theta = num_theta / den
+    MLD_tiles_Salt = num_salt / den
 
     """
     4. Calculate MLD per pixel
@@ -130,8 +172,8 @@ def main():
 
     MLD_pixels = xr.apply_ufunc( # use ufunc along single columns to manage memory
         calc_MLD_col,
-        LLC_sub.Theta,
-        LLC_sub.Salt,
+        MLD_tiles_Theta,
+        MLD_tiles_Salt,
         LLC_sub.Z,
         input_core_dims=[["k"], ["k"], ["k"]],
         output_core_dims=[[]],
@@ -147,34 +189,6 @@ def main():
     # rechunk
     LLC_MLD = LLC_MLD.chunk({'time':1,'i':384,'j':384}) # monthly chunks
 
-    # subset into tiles, weight by surface area
-    YC = LLC_MLD.YC
-    XC = LLC_MLD.XC
-    area = LLC_MLD.rA.chunk({'i':384,'j':384})
-
-    lat_min = float(YC.min())
-    lat_max = float(YC.max())
-    lon_min = float(XC.min())
-    lon_max = float(XC.max())
-
-    lat_edges = np.arange(lat_min, lat_max + tile_width, tile_width)
-    lon_edges = np.arange(lon_min, lon_max + tile_width, tile_width)
-
-    num = histogram(
-        YC,
-        XC,
-        bins=[lat_edges, lon_edges],
-        weights=llc_MLD['MLD_pixels'] * area,
-        dim=("j", "i"))
-
-    den = histogram(
-        YC,
-        XC,
-        bins=[lat_edges, lon_edges],
-        weights=area,
-        dim=("j", "i"))
-
-    MLD_tiles = num / den
 
     """
     6. Produce figures: time-averaged MLD heatmap with pixels=tile_width
@@ -185,21 +199,26 @@ def main():
     outdir = Path(f"figs/{exp_name}")
     outdir.mkdir(parents=True, exist_ok=True)
 
-    for t in MLD_tiles.time.values:
+    for t in LLC_MLD.time.values:
         # select and compute month
-        MLD_tiles_sel = MLD_tiles.sel(time=t).compute()
+        MLD_tiles_sel = LLC_MLD.sel(time=t).compute()
 
-        fig, ax = plt.subplots(figsize=(6,5))
+        fig, ax = plt.subplots(figsize=(8,5))
 
-        contours = ax.imshow(MLD_tiles_sel)#ax.contourf(MLD_map_sel.i, MLD_map_sel.j, vals, cmap="Spectral_r",vmin=np.min(vals),vmax=np.max(vals), levels = 5)
+        mld = ax.imshow(MLD_tiles_sel,
+        extent=[
+                float(LLC_MLD.XC.min()), float(LLC_MLD.XC.max()),
+                float(LLC_MLD.YC.min()), float(LLC_MLD.YC.max()),],
+            origin="lower",cmap=cmocean.cm.deep_r)
 
-        plt.colorbar(contours, ax = ax, label="MLD (m)")
-
-        ax.set_title(f"{exp_name} – {pd.to_datetime(t).strftime('%B %Y')}", fontsize=14)
-
-       # rotate_axes_90_clockwise(ax)
-
+        plt.colorbar(mld, ax=ax, label="MLD (m)")
         month_str = pd.to_datetime(t).strftime('%m-%Y')
+
+        ax.set_title(f"{exp_name} – {month_str}", fontsize=14)
+
+        ax.set_xlabel("Longitude")
+        ax.set_ylabel("Latitude")
+
         fig.savefig(outdir / f"{month_str}.png", dpi=200, bbox_inches="tight")
         plt.close()
 
