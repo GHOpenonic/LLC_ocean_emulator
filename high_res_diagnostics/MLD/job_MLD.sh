@@ -21,9 +21,7 @@ location=/home/codycruz/LLC_ocean_emulator/high_res_diagnostics/MLD
 
 # Job type Flag ===========================================================
 # select which script is run
-job_type="per_pixel_face"
-#job_type="per_pixel"
-#job_type="per_tile"
+job_type="tiles_face"
 #job_type="ts"
 
 echo "Job:$job_type"
