@@ -1,6 +1,7 @@
 """
-This script calculates mixed layer depth (MLD) per tile, then plots, on a face of LLC4320 data using MLD methods in:
+This script calculates mixed layer depth (MLD) per pixel on a chunk of LLC4320 data using MLD methods in:
 https://github.com/abodner/submeso_param_net/blob/main/scripts/preprocess_llc4320/preprocess.py
+It is the first of two to calculate temporally averaged MLD on llc chunk
 
 The methods are as follows:
 
@@ -9,8 +10,7 @@ The methods are as follows:
 2. Set params
 3. Open and subset LLC4320
 4. Follow code to calculate the MLD per pixel
-5. Temporally coarsen, subset into tiles
-6. Produce figs
+5. save as zarr
 
 """
 
@@ -19,18 +19,12 @@ The methods are as follows:
 """
 # dependencies
 import numpy as np
-import pandas as pd
 import xarray as xr
-import matplotlib.pyplot as plt
-import cmocean
 import zarr
 from dask.distributed import Client, LocalCluster
 from fastjmd95 import jmd95numba 
 from scalene import scalene_profiler
 import os
-from xhistogram.xarray import histogram
-from pathlib import Path
-
 
 # calculate mld per column
 rho0 = 1025 #ref den in kg/m^3
@@ -99,19 +93,15 @@ def main():
     face = 7
     # set temporal params
     t_0 = 432
-    t_1 = t_0 + 24#(365*24) 
-
-    
-    # set tile width, temporal averaging
-    tile_width = 0.5
+    t_1 = t_0 + (365*24) 
 
     # horizontal subsets
     h_0 = 2000
     h_1 = h_0 + 540
 
     # exp name, data_dir
-    exp_name = str(slurm_job_name) + f'_face{face}' + f'_({t_0},{t_1})'+f'_{tile_width}'+f'_({h_0,h_1})'
-    #data_dir = '/orcd/data/abodner/002/cody/MLD_per_pixel'
+    exp_name = str(slurm_job_name) + f'_face{face}' + f'_({t_0},{t_1})'+f'_({h_0,h_1})'
+    data_dir = '/orcd/data/abodner/002/cody/MLD_per_pixel'
 
     logger.info(f'Experiment: {exp_name}')
 
@@ -119,52 +109,11 @@ def main():
     3. open and subset LLC4320
     """
 
-
     # open LLC4320 and chunk: k should be full-column per chunk for .min(dim="k")
     LLC_face = xr.open_zarr('/orcd/data/abodner/003/LLC4320/LLC4320',consolidated=False, chunks={"time": 96,"k": -1,"i": 384,"j": 384,},)
 
     # select temporal extent, select face
-    LLC_sub = LLC_face.isel(time=slice(t_0,t_1), face = face, i = slice(h_0,h_1), j = slice(h_0,h_1))[['Theta','Salt','Z','XC','YC','rA']]
-
-    """
-    SUBSET INTO TILES
-    """
-    # subset into tiles, weight by surface area
-    YC = LLC_sub.YC
-    XC = LLC_sub.XC
-    area = LLC_sub.rA.chunk({'i':384,'j':384})
-
-    lat_min = float(YC.min())
-    lat_max = float(YC.max())
-    lon_min = float(XC.min())
-    lon_max = float(XC.max())
-
-    lat_edges = np.arange(lat_min, lat_max + tile_width, tile_width)
-    lon_edges = np.arange(lon_min, lon_max + tile_width, tile_width)
-
-    num_theta = histogram(
-        YC,
-        XC,
-        bins=[lat_edges, lon_edges],
-        weights=LLC_sub['Theta'] * area,
-        dim=("j", "i"))
-
-    num_salt = histogram(
-        YC,
-        XC,
-        bins=[lat_edges, lon_edges],
-        weights=LLC_sub['Salt'] * area,
-        dim=("j", "i"))
-
-    den = histogram(
-        YC,
-        XC,
-        bins=[lat_edges, lon_edges],
-        weights=area,
-        dim=("j", "i"))
-
-    MLD_tiles_Theta = num_theta / den
-    MLD_tiles_Salt = num_salt / den
+    LLC_sub = LLC_face.isel(time=slice(t_0,t_1), face = face, i = slice(h_0,h_1), j = slice(h_0,h_1))[['Theta','Salt','Z','XC','YC']]
 
     """
     4. Calculate MLD per pixel
@@ -172,8 +121,8 @@ def main():
 
     MLD_pixels = xr.apply_ufunc( # use ufunc along single columns to manage memory
         calc_MLD_col,
-        MLD_tiles_Theta,
-        MLD_tiles_Salt,
+        LLC_sub.Theta,
+        LLC_sub.Salt,
         LLC_sub.Z,
         input_core_dims=[["k"], ["k"], ["k"]],
         output_core_dims=[[]],
@@ -181,46 +130,27 @@ def main():
         dask="parallelized",
         output_dtypes=[np.float32],)
 
-    LLC_MLD = LLC_sub.copy()
-    LLC_MLD['MLD_pixels'] = MLD_pixels
-    
-    LLC_MLD = LLC_MLD.resample(time="MS").mean() # divide into monthly, take the mean
-
-    # rechunk
-    LLC_MLD = LLC_MLD.chunk({'time':1,'i':384,'j':384}) # monthly chunks
-
+    area = LLC_sub.rA
 
     """
-    6. Produce figures: time-averaged MLD heatmap with pixels=tile_width
+    5. Save as zarr
     """
+    logger.info(f'Save as zarr')
 
-    logger.info('Produce figure')
-    
-    outdir = Path(f"figs/{exp_name}")
-    outdir.mkdir(parents=True, exist_ok=True)
+    #rechunk
+    MLD_pixels = MLD_pixels.chunk({"time": 96,"i": 384,"j": 384,})
 
-    for t in LLC_MLD.time.values:
-        # select and compute month
-        MLD_tiles_sel = LLC_MLD.sel(time=t).compute()
+    # define chunk encoding for zarr - match MDL_pixel chunking
+    encoding = {"MLD_pixels": {"chunks": (96, 384, 384)},}
 
-        fig, ax = plt.subplots(figsize=(8,5))
 
-        mld = ax.imshow(MLD_tiles_sel,
-        extent=[
-                float(LLC_MLD.XC.min()), float(LLC_MLD.XC.max()),
-                float(LLC_MLD.YC.min()), float(LLC_MLD.YC.max()),],
-            origin="lower",cmap=cmocean.cm.deep_r)
+    ds_out = xr.Dataset({
+        "MLD_pixels": MLD_pixels,
+        "rA": area,
+        "XC": LLC_sub["XC"],
+        "YC": LLC_sub["YC"],})
 
-        plt.colorbar(mld, ax=ax, label="MLD (m)")
-        month_str = pd.to_datetime(t).strftime('%m-%Y')
-
-        ax.set_title(f"{exp_name} – {month_str}", fontsize=14)
-
-        ax.set_xlabel("Longitude")
-        ax.set_ylabel("Latitude")
-
-        fig.savefig(outdir / f"{month_str}.png", dpi=200, bbox_inches="tight")
-        plt.close()
+    ds_out.to_zarr(store = f"{data_dir}/{exp_name}.zarr",mode="w", encoding = encoding)
 
     if scalene_flag:
         # stop memory profiling

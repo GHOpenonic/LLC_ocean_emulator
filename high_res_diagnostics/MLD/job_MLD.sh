@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH -p pi_abodner
-#SBATCH --job-name=MLD_test
+#SBATCH --job-name=MLD_2
 #SBATCH -N 1
 #SBATCH --ntasks-per-node=1
 #SBATCH --mem=700GB
@@ -20,9 +20,11 @@ module load miniforge/24.3.0-0
 location=/home/codycruz/LLC_ocean_emulator/high_res_diagnostics/MLD
 
 # Job type Flag ===========================================================
-# select which script is run
-job_type="tiles_face"
-#job_type="ts"
+# select which script is run:\
+#job_type="grid_1" # calculates MLD per pixel column -> averages spatially -> averages temporally
+#job_type="grid_2" # averages spatially -> calculates MLD per spatial tile -> averages temporally
+job_type="grid_3" # averages spatially -> averages temporally -> calculates MLD per spatial tile per month
+#job_type="ts" # calculates MLD time series in a spatial box
 
 echo "Job:$job_type"
 
