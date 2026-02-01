@@ -1,7 +1,7 @@
 """
-This script calculates mixed layer depth (MLD) per pixel on a face of LLC4320 data using MLD methods in:
+This script calculates mixed layer depth (MLD) per pixel on a chunk of LLC4320 data using MLD methods in:
 https://github.com/abodner/submeso_param_net/blob/main/scripts/preprocess_llc4320/preprocess.py
-It is the first of two to calculate temporally averaged MLD on llc faces
+It is the first of two to calculate temporally averaged MLD on llc chunk
 
 The methods are as follows:
 

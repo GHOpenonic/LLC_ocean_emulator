@@ -97,21 +97,29 @@ def main():
     logger.info('Set params')
 
     # set location
-    face = 7
+    # face = 7
     # set temporal params
-    t_0 = 2640#432
-    t_1 = 3384 #t_0 + 24#(365*24) #JANUARY 
+    t_0 = 432
+    t_1 = t_0 + int(365*24) #yr 
 
     
     # set tile width, temporal averaging
     tile_width = 0.25
 
     # horizontal subsets
-    h_0 = 2000
-    h_1 = h_0 + 540
+    # h_0 = 2000
+    # h_1 = h_0 + 540
+
+    # AGULHAS:
+    j_0 = 800
+    j_1 = j_0 + 540
+    i_0 = 2500
+    i_1 = i_0 + 540
+
+    face = 1
 
     # exp name, data_dir
-    exp_name = str(slurm_job_name) + f'_face{face}' + f'_({t_0},{t_1})'+f'_{tile_width}'+f'_({h_0,h_1})'
+    exp_name = str(slurm_job_name) + f'_face{face}' + f'_({t_0},{t_1})'+f'_{tile_width}'+f'_(Agulhas)'
     #data_dir = '/orcd/data/abodner/002/cody/MLD_per_pixel'
 
     logger.info(f'Experiment: {exp_name}')
@@ -125,7 +133,7 @@ def main():
     LLC_face = xr.open_zarr('/orcd/data/abodner/003/LLC4320/LLC4320',consolidated=False, chunks={"time": 96,"k": -1,"i": 384,"j": 384,},)
 
     # select temporal extent, select face
-    LLC_sub = LLC_face.isel(time=slice(t_0,t_1), face = face, i = slice(h_0,h_1), j = slice(h_0,h_1))[['Theta','Salt','Z','XC','YC','rA']]
+    LLC_sub = LLC_face.isel(time=slice(t_0,t_1), face = face, i = slice(i_0,i_1), j = slice(j_0,j_1))[['Theta','Salt','Z','XC','YC','rA']]
 
     """
     SUBSET INTO TILES

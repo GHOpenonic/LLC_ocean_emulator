@@ -27,7 +27,5 @@ logs/
 high_res_diagnostics/VHF/scalene/
 
 # ignore videos/frames
-high_res_diagnostics/MLD/high-res-video/frames_August
-high_res_diagnostics/MLD/high-res-video/frames_January
-high_res_diagnostics/MLD/high-res-video/frames_yr
-high_res_diagnostics/MLD/high-res-video/videos
+high_res_diagnostics/MLD/high-res-video/Agulhas
+high_res_diagnostics/MLD/high-res-video/North_Pacific
