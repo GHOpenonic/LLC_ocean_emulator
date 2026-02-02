@@ -31,6 +31,7 @@ from scalene import scalene_profiler
 import os
 from xhistogram.xarray import histogram
 from pathlib import Path
+import time
 
 
 # calculate mld per column
@@ -57,7 +58,56 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# build i,j,face index for a lat/lon spatial box about central lat/lon coord for llc4320
+def llc_latlon_box_indices(
+    LLC,
+    lat_center,
+    lon_center,
+    degree_extent
+):
+
+    half = degree_extent / 2.0
+
+    lat_min = lat_center - half
+    lat_max = lat_center + half
+    lon_min = lon_center - half
+    lon_max = lon_center + half
+
+    XC = LLC["XC"]
+    YC = LLC["YC"]
+
+    face_boxes = {}
+
+    for face in XC.face.values:
+        xc = XC.sel(face=face)
+        yc = YC.sel(face=face)
+
+        # mask points inside the lat/lon box
+        mask = (
+            (yc >= lat_min) & (yc <= lat_max) &
+            (xc >= lon_min) & (xc <= lon_max)
+        )
+
+        if not mask.any():
+            continue
+
+        # get i/j indices where mask is True
+        jj, ii = np.where(mask.values)
+
+        j_start = int(jj.min())
+        j_end   = int(jj.max()) + 1
+        i_start = int(ii.min())
+        i_end   = int(ii.max()) + 1
+
+        face_boxes[int(face)] = (j_start, j_end, i_start, i_end)
+
+    return face_boxes
+
 def main():
+
+        
+    t0 = time.perf_counter()
+    logger.info(f"time elapsed: {(time.perf_counter() - t0)/60:.3f} minutes")
 
     logger.info('Initializing Dask')
 
@@ -78,7 +128,7 @@ def main():
         scalene_profiler.start()
     
 
-    n_workers=2
+    n_workers=1
     mem_gb = slurm_mem / 1024
     logger.info(f'{mem_gb}GB')
     worker_mem = f"{0.9 * mem_gb / n_workers:.1f}GB"
@@ -89,37 +139,73 @@ def main():
         dashboard_address=None,
         local_directory="/tmp")
     client = Client(cluster)
-    logger.info(client)
+    logger.info(f'{client}')
 
     """
     2. Set params
     """
     logger.info('Set params')
 
-    # set location
-    # face = 7
-    # set temporal params
-    t_0 = 432
-    t_1 = t_0 + int(365*24) #yr 
+                        # # set location
+                        # # face = 7
+                        # # set temporal params
+                        # t_0 = 432
+                        # t_1 = t_0 + int(365*24) #yr 
 
-    
-    # set tile width, temporal averaging
+                        
+                        # # set tile width, temporal averaging
+                        # tile_width = 0.25
+
+                        # # horizontal subsets
+                        # # h_0 = 2000
+                        # # h_1 = h_0 + 540
+
+                        # # AGULHAS:
+                        # j_0 = 800
+                        # j_1 = j_0 + 540
+                        # i_0 = 2500
+                        # i_1 = i_0 + 540
+
+                        # face = 1
+
+
+     # set size of tile in degrees lat/lon, sets FFT tile sizes, 
+    # set size of sub-tile boxes in lat/lon, set i,j extents of the spatial box
+    # ------------ 1 deg Kuroshio Extension centered @ 39°N, 158°E
+    # loc = 'Kuroshio'
+    # lat_center = 39
+    # lon_center = 158
+    # extent = 1.0
+    # buffer = 0 # a little greater than 1 allows tile_width to trim to 4 sub-panels of exactly 0.5 x 0.5 deg^2 = 1 x 1 deg^2
+    # degree_extent = extent + buffer
+    # tile_width = 0.5
+
+    # ------------ 1 deg Agulhas Current centered @ 43°S, 14°E
+    loc = 'Agulhas'
+    lat_center = -43
+    lon_center = 14
+    extent = 1.0
+    buffer = 0 # a little greater than 1 allows tile_width to trim to 4 sub-panels of exactly 0.5 x 0.5 deg^2 = 1 x 1 deg^2
+    degree_extent = extent + buffer
     tile_width = 0.25
 
-    # horizontal subsets
-    # h_0 = 2000
-    # h_1 = h_0 + 540
+    # ------------ 1 deg Gulf Stream centered @ 43°S, 14°E
+    # loc = 'Gulf'
+    # lat_center = 39
+    # lon_center = -66
+    # extent = 1.0
+    # buffer = 0 # a little greater than 1 allows tile_width to trim to 4 sub-panels of exactly 0.5 x 0.5 deg^2 = 1 x 1 deg^2
+    # degree_extent = extent + buffer
+    # tile_width = 0.5
 
-    # AGULHAS:
-    j_0 = 800
-    j_1 = j_0 + 540
-    i_0 = 2500
-    i_1 = i_0 + 540
 
-    face = 1
+
+    # temporal extent of the calculation/time series
+    t_0 =  0 #4000
+    t_1 =  24#int(429 * 24)# t_0 +  24 * 4 * 4#
 
     # exp name, data_dir
-    exp_name = str(slurm_job_name) + f'_face{face}' + f'_({t_0},{t_1})'+f'_{tile_width}'+f'_(Agulhas)'
+    exp_name = str(slurm_job_name) + f'_({t_0},{t_1})'+f'_{loc}'
     #data_dir = '/orcd/data/abodner/002/cody/MLD_per_pixel'
 
     logger.info(f'Experiment: {exp_name}')
@@ -130,10 +216,30 @@ def main():
 
 
     # open LLC4320 and chunk: k should be full-column per chunk for .min(dim="k")
-    LLC_face = xr.open_zarr('/orcd/data/abodner/003/LLC4320/LLC4320',consolidated=False, chunks={"time": 96,"k": -1,"i": 384,"j": 384,},)
+    LLC_full = xr.open_zarr('/orcd/data/abodner/003/LLC4320/LLC4320',consolidated=False, chunks={"time": 96,"k": -1,"i": -1,"j": -1,},)
 
-    # select temporal extent, select face
-    LLC_sub = LLC_face.isel(time=slice(t_0,t_1), face = face, i = slice(i_0,i_1), j = slice(j_0,j_1))[['Theta','Salt','Z','XC','YC','rA']]
+                        # # select temporal extent, select face
+                        # LLC_sub = LLC_face.isel(time=slice(t_0,t_1), face = face, i = slice(i_0,i_1), j = slice(j_0,j_1))[['Theta','Salt','Z','XC','YC','rA']]
+
+
+     # select [i,j] spatial box, face, temporal subset
+    boxes = llc_latlon_box_indices(
+    LLC_full,
+    lat_center=lat_center,
+    lon_center=lon_center,
+    degree_extent=degree_extent)
+
+    subs = []
+    for face, (j0, j1, i0, i1) in boxes.items():
+        subs.append(
+            LLC_full.isel(face=face, j=slice(j0, j1), i=slice(i0, i1))
+        )
+
+    LLC_sub = xr.concat(subs, dim="face")
+
+    # select temporal extent
+    LLC_sub = LLC_sub.isel(time=slice(t_0,t_1))[['Theta','Salt','Z','XC','YC','rA']]
+
 
     """
     SUBSET INTO TILES
@@ -192,58 +298,63 @@ def main():
     
     LLC_MLD = LLC_MLD.resample(time="MS").mean() # divide into monthly, take the mean
 
-    """
-    7. Save as zarr
-    """
-    logger.info(f'Save as zarr')
-
-    # define chunk encoding for zarr - match MDL_pixel chunking
- #   LLC_MLD = LLC_MLD.chunk({'time': 1, 'i': 384, 'j': 384})
- #   encoding = {"MLD_pixels": {"chunks": (1, 384, 384)},}
 
 
-    ds_out = xr.Dataset({
-        "MLD_pixels": LLC_MLD['MLD_pixels'],
-        "rA": area,
-        "XC": LLC_MLD["XC"],
-        "YC": LLC_MLD["YC"],})
-    data_dir = '/orcd/data/abodner/002/cody/MLD_per_pixel'
-    ds_out.to_zarr(store = f"{data_dir}/{exp_name}.zarr",mode="w")#, encoding = encoding)
+    logger.info(f"code time elapsed: {(time.perf_counter() - t0)/60:.3f} minutes")
 
-    logger.info(f'data out: {data_dir}/{exp_name}.zarr"')
 
     """
     6. Produce figures: time-averaged MLD heatmap with pixels=tile_width
     """
 
-    # logger.info('Produce figure')
+    logger.info('Produce figure')
     
-    # outdir = Path(f"figs/{exp_name}")
-    # outdir.mkdir(parents=True, exist_ok=True)
+    outdir = Path(f"figs/{exp_name}")
+    outdir.mkdir(parents=True, exist_ok=True)
 
-    # for t in LLC_MLD.time.values:
-    #     logger.info("t")
-    #     # select and compute month
-    #     MLD_tiles_sel = LLC_MLD.sel(time=t).compute()
+    for t in LLC_MLD.time.values:
+        logger.info("t")
+        # select and compute month
+        MLD_tiles_sel = LLC_MLD.sel(time=t).compute()
 
-    #     fig, ax = plt.subplots(figsize=(8,5))
+        fig, ax = plt.subplots(figsize=(8,5))
 
-    #     mld = ax.imshow(MLD_tiles_sel['MLD_pixels'],
-    #     extent=[
-    #             float(LLC_MLD.XC.min()), float(LLC_MLD.XC.max()),
-    #             float(LLC_MLD.YC.min()), float(LLC_MLD.YC.max()),],
-    #         origin="lower",cmap=cmocean.cm.deep_r)
+        mld = ax.imshow(MLD_tiles_sel['MLD_pixels'],
+        extent=[
+                float(LLC_MLD.XC.min()), float(LLC_MLD.XC.max()),
+                float(LLC_MLD.YC.min()), float(LLC_MLD.YC.max()),],
+            origin="lower",cmap=cmocean.cm.deep_r)
 
-    #     plt.colorbar(mld, ax=ax, label="MLD (m)")
-    #     month_str = pd.to_datetime(t).strftime('%m-%Y')
+        plt.colorbar(mld, ax=ax, label="MLD (m)")
+        month_str = pd.to_datetime(t).strftime('%m-%Y')
 
-    #     ax.set_title(f"{exp_name} – {month_str}", fontsize=14)
+        ax.set_title(f"{exp_name} – {month_str}", fontsize=14)
 
-    #     ax.set_xlabel("Longitude")
-    #     ax.set_ylabel("Latitude")
+        ax.set_xlabel("Longitude")
+        ax.set_ylabel("Latitude")
 
-    #     fig.savefig(outdir / f"{month_str}.png", dpi=200, bbox_inches="tight")
-    #     plt.close()
+        fig.savefig(outdir / f"{month_str}.png", dpi=200, bbox_inches="tight")
+        plt.close()
+
+
+    logger.info(f"code + figure time elapsed: {(time.perf_counter() - t0)/60:.3f} minutes")
+
+
+
+    """
+    7. Save as zarr
+    """
+    logger.info(f'Save as zarr')\
+    
+
+    data_dir = '/orcd/data/abodner/002/cody/MLD_per_pixel'
+    LLC_MLD.to_zarr(store = f"{data_dir}/{exp_name}.zarr",mode="w")#, encoding = encoding)
+    logger.info(f"zarr storage time elapsed: {(time.perf_counter() - t1)/60:.3f} minutes")
+    logger.info(f"total time elapsed: {(time.perf_counter() - t0)/60:.3f} minutes")
+
+    logger.info(f'data out: {data_dir}/{exp_name}.zarr"')
+
+
 
 
 
