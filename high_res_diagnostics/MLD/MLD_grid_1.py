@@ -19,13 +19,17 @@ The methods are as follows:
 """
 # dependencies
 import numpy as np
+import pandas as pd
 import xarray as xr
 import zarr
 from dask.distributed import Client, LocalCluster
 from fastjmd95 import jmd95numba 
 from scalene import scalene_profiler
+from pathlib import Path
 import os
 import time
+import matplotlib.pyplot as plt
+import cmocean
 
 # calculate mld per column
 rho0 = 1025 #ref den in kg/m^3
@@ -161,22 +165,22 @@ def main():
      # set size of tile in degrees lat/lon, sets FFT tile sizes, 
     # set size of sub-tile boxes in lat/lon, set i,j extents of the spatial box
     # ------------ 1 deg Kuroshio Extension centered @ 39°N, 158°E
-    # loc = 'Kuroshio'
-    # lat_center = 39
-    # lon_center = 158
-    # extent = 1.0
-    # buffer = 0 # a little greater than 1 allows tile_width to trim to 4 sub-panels of exactly 0.5 x 0.5 deg^2 = 1 x 1 deg^2
-    # degree_extent = extent + buffer
-    # tile_width = 0.5
-
-    # ------------ 1 deg Agulhas Current centered @ 43°S, 14°E
-    loc = 'Agulhas'
-    lat_center = -43
-    lon_center = 14
-    extent = 1.0
+    loc = 'Kuroshio'
+    lat_center = 39
+    lon_center = 158
+    extent = 5.0
     buffer = 0 # a little greater than 1 allows tile_width to trim to 4 sub-panels of exactly 0.5 x 0.5 deg^2 = 1 x 1 deg^2
     degree_extent = extent + buffer
     tile_width = 0.25
+
+    # ------------ 1 deg Agulhas Current centered @ 43°S, 14°E
+    # loc = 'Agulhas'
+    # lat_center = -43
+    # lon_center = 14
+    # extent = 5.0
+    # buffer = 0 # a little greater than 1 allows tile_width to trim to 4 sub-panels of exactly 0.5 x 0.5 deg^2 = 1 x 1 deg^2
+    # degree_extent = extent + buffer
+    # tile_width = 0.25
 
     # ------------ 1 deg Gulf Stream centered @ 43°S, 14°E
     # loc = 'Gulf'
@@ -190,8 +194,8 @@ def main():
 
 
     # temporal extent of the calculation/time series
-    t_0 =  0 #4000
-    t_1 =  24#int(429 * 24)# t_0 +  24 * 4 * 4#
+    t_0 = 432
+    t_1 = t_0 + (365*24) 
 
     # exp name, data_dir
     exp_name = str(slurm_job_name) + f'_({t_0},{t_1})'+f'_{loc}'
@@ -260,28 +264,29 @@ def main():
     tile_lon = ((LLC_sub.XC - lon_min) / tile_width).astype("int32").compute()
 
     # stack dataset
-    MLD_1_tile = LLC_sub.assign_coords(
+    MLD_tile = LLC_sub.assign_coords(
         tile_lat=tile_lat,
         tile_lon=tile_lon,
-    ).stack(cell=("j","i"))
+    ).stack(cell=("face","j","i"))
 
     # stack area
-    area_cell = LLC_sub.rA.stack(cell=("j","i"))
+    area_cell = LLC_sub.rA.stack(cell=("face","j","i"))
 
     # attach tile labels to area
     area_cell = area_cell.assign_coords(
-        tile_lat=MLD_1_tile.tile_lat,
-        tile_lon=MLD_1_tile.tile_lon,
+        tile_lat=MLD_tile.tile_lat,
+        tile_lon=MLD_tile.tile_lon,
     )
 
-    MLD_1_tile = MLD_1_tile.reset_index("cell")
+    MLD_tile = MLD_tile.reset_index("cell")
     area_cell = area_cell.reset_index("cell")
 
-    num = (MLD_1_tile * area_cell).groupby(["tile_lat","tile_lon"]).sum("cell")
+    num = (MLD_tile.MLD_pixels * area_cell).groupby(["tile_lat","tile_lon"]).sum("cell")
     den = area_cell.groupby(["tile_lat","tile_lon"]).sum("cell")
 
-    MLD_1_tiles = num / den
-    LLC_MLD = MLD_1_tiles.resample(time="MS").mean()
+    MLD_1_tiles = (num / den)
+    MLD_tile['MLD_pixels'] = MLD_1_tiles
+    MLD_tile = MLD_tile.resample(time="MS").mean()
 
     logger.info(f"code time elapsed: {(time.perf_counter() - t0)/60:.3f} minutes")
 
@@ -290,38 +295,38 @@ def main():
     6. Produce figures: time-averaged MLD heatmap with pixels=tile_width
     """
 
-    logger.info('Produce figure')
+    # logger.info('Produce figure')
     
-    outdir = Path(f"figs/{exp_name}")
-    outdir.mkdir(parents=True, exist_ok=True)
+    # outdir = Path(f"figs/{exp_name}")
+    # outdir.mkdir(parents=True, exist_ok=True)
 
-    for t in LLC_MLD.time.values:
-        logger.info("t")
-        # select and compute month
-        MLD_tiles_sel = LLC_MLD.sel(time=t).compute()
+    # for t in MLD_tile.time.values:
+    #     month_str = pd.to_datetime(t).strftime('%m-%Y')
+    #     logger.info(f"{month_str}")
+    #     # select and compute month
+    #     MLD_tiles_sel = MLD_tile.sel(time=t).compute()
 
-        fig, ax = plt.subplots(figsize=(8,5))
+    #     fig, ax = plt.subplots(figsize=(8,5))
 
-        mld = ax.imshow(MLD_tiles_sel['MLD_pixels'],
-        extent=[
-                float(LLC_MLD.XC.min()), float(LLC_MLD.XC.max()),
-                float(LLC_MLD.YC.min()), float(LLC_MLD.YC.max()),],
-            origin="lower",cmap=cmocean.cm.deep_r)
+    #     mld = ax.imshow(MLD_tiles_sel['MLD_pixels'],
+    #     extent=[
+    #             float(MLD_tile.XC.min()), float(MLD_tile.XC.max()),
+    #             float(MLD_tile.YC.min()), float(MLD_tile.YC.max()),],
+    #         origin="lower",cmap=cmocean.cm.deep_r)
 
-        plt.colorbar(mld, ax=ax, label="MLD (m)")
-        month_str = pd.to_datetime(t).strftime('%m-%Y')
+    #     plt.colorbar(mld, ax=ax, label="MLD (m)")
 
-        ax.set_title(f"{exp_name} – {month_str}", fontsize=14)
+    #     ax.set_title(f"{exp_name} – {month_str}", fontsize=14)
 
-        ax.set_xlabel("Longitude")
-        ax.set_ylabel("Latitude")
+    #     ax.set_xlabel("Longitude")
+    #     ax.set_ylabel("Latitude")
 
-        fig.savefig(outdir / f"{month_str}.png", dpi=200, bbox_inches="tight")
-        plt.close()
+    #     fig.savefig(outdir / f"{month_str}.png", dpi=200, bbox_inches="tight")
+    #     plt.close()
 
 
-    logger.info(f"code + figure time elapsed: {(time.perf_counter() - t0)/60:.3f} minutes")
-    t1 = time.perf_counter()
+    # logger.info(f"code + figure time elapsed: {(time.perf_counter() - t0)/60:.3f} minutes")
+    # t1 = time.perf_counter()
 
 
   #  area = LLC_sub.rA.chunk({"i": 384,"j": 384,}) 
@@ -331,7 +336,7 @@ def main():
     """
     logger.info(f'Save as zarr')
 
-    LLC_MLD.to_zarr(store = f"{data_dir}/{exp_name}.zarr",mode="w")
+    MLD_tile[["YC","XC","MLD_pixels","rA"]].to_zarr(store = f"{data_dir}/{exp_name}.zarr",mode="w")
 
     logger.info(f"zarr storage time elapsed: {(time.perf_counter() - t1)/60:.3f} minutes")
     logger.info(f"total time elapsed: {(time.perf_counter() - t0)/60:.3f} minutes")

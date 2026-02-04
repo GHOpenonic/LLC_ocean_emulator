@@ -1,12 +1,12 @@
 #!/bin/bash
 #SBATCH -p pi_abodner
-#SBATCH --job-name=MLD_1
+#SBATCH --job-name=MLD_2_Kuroshio_zarr
 #SBATCH -N 1
 #SBATCH --ntasks-per-node=1
-#SBATCH --mem=100GB
+#SBATCH --mem=360GB
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=6
-#SBATCH --time=00-08:00:00
+#SBATCH --time=01-01:00:00
 #SBATCH -o logs/%x-%j.out
 #SBATCH -e logs/%x-%j.out
 #SBATCH --hint=nomultithread
@@ -21,8 +21,8 @@ location=/home/codycruz/LLC_ocean_emulator/high_res_diagnostics/MLD
 
 # Job type Flag ===========================================================
 # select which script is run:\
-job_type="grid_1" # calculates MLD per pixel column -> averages spatially -> averages temporally
-#job_type="grid_2" # averages spatially -> calculates MLD per spatial tile -> averages temporally
+#job_type="grid_1" # calculates MLD per pixel column -> averages spatially -> averages temporally
+job_type="grid_2" # averages spatially -> calculates MLD per spatial tile -> averages temporally
 # job_type="grid_3" # averages spatially -> averages temporally -> calculates MLD per spatial tile per month
 #job_type="ts" # calculates MLD time series in a spatial box
 
