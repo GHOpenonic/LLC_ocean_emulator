@@ -1,12 +1,12 @@
 #!/bin/bash
 #SBATCH -p pi_abodner
-#SBATCH --job-name=MLD_grid_Gulf_Stream
+#SBATCH --job-name=MLD_global_test
 #SBATCH -N 1
 #SBATCH --ntasks-per-node=1
-#SBATCH --mem=360GB
+#SBATCH --mem=600GB
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=6
-#SBATCH --time=01-01:00:00
+#SBATCH --cpus-per-task=60
+#SBATCH --time=00-06:00:00
 #SBATCH -o logs/%x-%j.out
 #SBATCH -e logs/%x-%j.out
 #SBATCH --hint=nomultithread
@@ -17,12 +17,7 @@ start=$(date +%s)
 module load miniforge/24.3.0-0
 
 # set location of script
-location=/home/codycruz/LLC_ocean_emulator/high_res_diagnostics/MLD
-
-# Job type Flag ===========================================================
-# select which script is run:\
-job_type="grid" # averages spatially -> calculates MLD per spatial tile -> averages temporally
-#job_type="ts" # calculates MLD time series in a spatial box
+location=/home/codycruz/LLC_ocean_emulator/high_res_diagnostics/MLD/global
 
 echo "Job:$job_type"
 
@@ -33,7 +28,7 @@ export SCALENE_PROFILE=True
 # activate virtual environment
 source /home/codycruz/LLC_ocean_emulator/high_res_diagnostics/.venv/bin/activate
 
-echo "======== calculate MLD of a spatiotemporal subset of the LLC4320 dataset ========"
+echo "======== calculate MLD of a spatiotemporal subset of the LLC4320 dataset, GLOBAL TEST ========"
 echo "scalene: $scalene"
 
 # some diagnostics
@@ -57,7 +52,7 @@ if [ "$scalene" = "True" ]; then
 
 else
     # run the script without memory profiling
-    uv run "$location/MLD_${job_type}.py"
+    uv run "$location/MLD_global_test.py"
 fi
 
 
