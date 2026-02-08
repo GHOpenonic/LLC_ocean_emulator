@@ -1,12 +1,12 @@
 #!/bin/bash
 #SBATCH -p pi_abodner
-#SBATCH --job-name=MLD_global_memtest
+#SBATCH --job-name=MLD_global_exp:1
 #SBATCH -N 1
 #SBATCH --ntasks-per-node=1
 #SBATCH --mem=350GB
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=28
-#SBATCH --time=00-06:00:00
+#SBATCH --time=02-04:00:00
 #SBATCH -o logs/%x-%j.out
 #SBATCH -e logs/%x-%j.out
 #SBATCH --hint=nomultithread
@@ -52,7 +52,7 @@ if [ "$scalene" = "True" ]; then
 
 else
     # run the script without memory profiling
-    uv run "$location/MLD_global_test.py"
+    uv run "$location/MLD_global.py"
 fi
 
 

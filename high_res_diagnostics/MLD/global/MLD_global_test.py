@@ -117,14 +117,17 @@ def main():
 
     # temporal extent of the calculation/time series
     t_0 = 432
-    t_iter = (30 * 24)
+    t_iter = 1460#(365 * 24)
     t_1 = t_0 + t_iter 
 
     # face
-    face = 7
+    #face = 7
+
+    # FOR TESTING: horizontal slices:
+    h_0, h_1  = 0, 4320
 
     # exp name
-    exp_name = str(slurm_job_name) + f'_({t_0},{t_1})'+f'_{face}'
+    exp_name = str(slurm_job_name) + f'_({t_0},{t_1})'+f'_all_faces' #+ f'_{h_0,},{h_1}'
 
     logger.info(f'Experiment: {exp_name}')
 
@@ -133,7 +136,7 @@ def main():
     """
 
     # open LLC4320 and slice to correct time slice and face
-    LLC_sub = xr.open_zarr('/orcd/data/abodner/003/LLC4320/LLC4320',consolidated=False)[['Theta', 'Salt', 'Z','XC','YC']].isel(time=slice(t_0,t_1),face=face)
+    LLC_sub = xr.open_zarr('/orcd/data/abodner/003/LLC4320/LLC4320',consolidated=False)[['Theta', 'Salt', 'Z','XC','YC']].isel(time=slice(t_0,t_1), i = slice(h_0, h_1),j=slice(h_0,h_1))
 
     """
     4. Calculate MLD per pixel
@@ -158,21 +161,21 @@ def main():
     t1 = time.perf_counter()
     logger.info(f'Append to zarr')
 
-    mld_4d = MLD_pixels.expand_dims(face=[face]) 
+    mld_4d = MLD_pixels#.expand_dims(face=[face]) 
 
     # Reorder to match: (time, face, j, i)
     mld_4d = mld_4d.transpose("time", "face", "j", "i")
 
-    MLD_intermediary = xr.Dataset({"MLD": mld_4d.drop_vars(['XC', 'YC', 'Z'], errors='ignore')}).chunk({"time": 24})
+    MLD_intermediary = xr.Dataset({"MLD": mld_4d.drop_vars(['XC', 'YC', 'Z'], errors='ignore')}).chunk({"time": 730})
 
 
     MLD_intermediary.to_zarr(
-        "/orcd/data/abodner/002/cody/MLD_llc4320/MLD_ds_test.zarr",
+        "/orcd/data/abodner/002/cody/MLD_llc4320/MLD_ds_large_spatial_test.zarr",
         region={
             "time": slice(0, t_iter),
-            "face": slice(0,1),
-            "j": slice(0, 4320),
-            "i": slice(0, 4320),
+            "face": slice(0,13),
+            "j": slice(0, h_1 - h_0),
+            "i": slice(0, h_1 - h_0),
         },
         zarr_format = 2
     )
