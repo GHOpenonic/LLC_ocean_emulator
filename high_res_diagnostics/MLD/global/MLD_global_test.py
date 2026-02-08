@@ -1,6 +1,5 @@
 """
-This script calculates mixed layer depth (MLD) per pixel on a spatiotemporal chunk of LLC4320 data using MLD methods in:
-https://github.com/abodner/submeso_param_net/blob/main/scripts/preprocess_llc4320/preprocess.py
+This script calculates mixed layer depth (MLD) per pixel on a spatiotemporal chunk of LLC4320 data
 It will be used iteratively to compute and save MLD per pixel for a test subset of the LLC4320 dataset
 
 The methods are as follows:
@@ -9,7 +8,7 @@ The methods are as follows:
 1. Initialize dask
 2. Set params
 3. Open and subset LLC4320
-4. Follow code to calculate the MLD per pixel
+4. Calculate the MLD per pixel
 5. Append to zarr
 
 """
@@ -61,8 +60,6 @@ def calc_MLD_col(theta, salt, z, out):
         drho = rho_k - rho_ref
         
         if drho <= _dens_thres:
-            # We want the minimum Z (deepest depth, since Z is usually negative)
-            # If your Z is positive, logic might need to flip to np.max
             if np.isnan(out[0]) or z[k] < out[0]:
                 out[0] = z[k]
 
@@ -99,7 +96,7 @@ def main():
         scalene_profiler.start()
     
 
-    n_workers=15
+    n_workers=7
     mem_gb = slurm_mem / 1024
     logger.info(f'{mem_gb}GB')
     worker_mem = f"{0.9 * mem_gb / n_workers:.1f}GB"
@@ -120,14 +117,14 @@ def main():
 
     # temporal extent of the calculation/time series
     t_0 = 432
-    t_1 = t_0 + (1 * 5 * 24)
+    t_iter = (30 * 24)
+    t_1 = t_0 + t_iter 
 
     # face
     face = 7
 
-    # exp name, data_dir
+    # exp name
     exp_name = str(slurm_job_name) + f'_({t_0},{t_1})'+f'_{face}'
-    data_dir = '/orcd/data/abodner/002/cody/MLD_per_pixel'
 
     logger.info(f'Experiment: {exp_name}')
 
@@ -166,14 +163,14 @@ def main():
     # Reorder to match: (time, face, j, i)
     mld_4d = mld_4d.transpose("time", "face", "j", "i")
 
-    t_len = t_1 - t_0
-    MLD_intermediary = xr.Dataset({"MLD": mld_4d.drop_vars(['XC', 'YC', 'Z'], errors='ignore')})
+    MLD_intermediary = xr.Dataset({"MLD": mld_4d.drop_vars(['XC', 'YC', 'Z'], errors='ignore')}).chunk({"time": 24})
+
 
     MLD_intermediary.to_zarr(
         "/orcd/data/abodner/002/cody/MLD_llc4320/MLD_ds_test.zarr",
         region={
-            "time": slice(t_0, t_1),
-            "face": slice(face, face + 1), # Must be a slice!
+            "time": slice(0, t_iter),
+            "face": slice(0,1),
             "j": slice(0, 4320),
             "i": slice(0, 4320),
         },

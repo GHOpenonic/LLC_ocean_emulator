@@ -1,11 +1,11 @@
 #!/bin/bash
 #SBATCH -p pi_abodner
-#SBATCH --job-name=MLD_global_test
+#SBATCH --job-name=MLD_global_memtest
 #SBATCH -N 1
 #SBATCH --ntasks-per-node=1
-#SBATCH --mem=600GB
+#SBATCH --mem=350GB
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=60
+#SBATCH --cpus-per-task=28
 #SBATCH --time=00-06:00:00
 #SBATCH -o logs/%x-%j.out
 #SBATCH -e logs/%x-%j.out
