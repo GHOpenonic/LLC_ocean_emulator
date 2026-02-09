@@ -113,11 +113,14 @@ def main():
     2. Set params
     """
     logger.info('Set params')
+    # write exp_n ---------------------------------------------
+    exp_n = 0
 
 
     # temporal extent of the calculation/time series
-    t_0 = 432
+    t_llc_offset = 432
     t_iter = 1460#(365 * 24)
+    t_0 = t_llc_offset + exp_n * t_iter
     t_1 = t_0 + t_iter 
 
     # face
@@ -127,7 +130,7 @@ def main():
     h_0, h_1  = 0, 4320
 
     # exp name
-    exp_name = str(slurm_job_name) + f'_({t_0},{t_1})'+f'_all_faces' #+ f'_{h_0,},{h_1}'
+    exp_name = str(slurm_job_name)+ f'_exp:{exp_n}'+ f'_({t_0},{t_1})'+f'_all_faces' #+ f'_{h_0,},{h_1}'
 
     logger.info(f'Experiment: {exp_name}')
 
@@ -172,7 +175,7 @@ def main():
     MLD_intermediary.to_zarr(
         "/orcd/data/abodner/002/cody/MLD_llc4320/MLD_ds_large_spatial_test.zarr",
         region={
-            "time": slice(0, t_iter),
+            "time": slice(t_0 - t_llc_offset, t_1),
             "face": slice(0,13),
             "j": slice(0, h_1 - h_0),
             "i": slice(0, h_1 - h_0),

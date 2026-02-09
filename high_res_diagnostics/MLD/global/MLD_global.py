@@ -96,7 +96,7 @@ def main():
         scalene_profiler.start()
     
 
-    n_workers=7
+    n_workers=4
     mem_gb = slurm_mem / 1024
     logger.info(f'{mem_gb}GB')
     worker_mem = f"{0.9 * mem_gb / n_workers:.1f}GB"

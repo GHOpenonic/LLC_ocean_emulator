@@ -1,9 +1,9 @@
 #!/bin/bash
 #SBATCH -p pi_abodner
-#SBATCH --job-name=MLD_global_exp:1
+#SBATCH --job-name=MLD_global_exp:1_rerun
 #SBATCH -N 1
 #SBATCH --ntasks-per-node=1
-#SBATCH --mem=350GB
+#SBATCH --mem=400GB
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=28
 #SBATCH --time=02-04:00:00
