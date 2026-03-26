@@ -192,19 +192,29 @@ def main():
     # tile_width = 0.25
 
     # ------------ 1 deg Gulf Stream centered @ 43°S, 14°E
-    loc = 'Gulf'
-    lat_center = 37.5
-    lon_center = -65
-    extent = 5.0
-    buffer = 0 # a little greater than 1 allows tile_width to trim to 4 sub-panels of exactly 0.5 x 0.5 deg^2 = 1 x 1 deg^2
-    degree_extent = extent + buffer
+    # loc = 'Gulf'
+    # lat_center = 37.5
+    # lon_center = -65
+    # extent = 5.0
+    # buffer = 0 # a little greater than 1 allows tile_width to trim to 4 sub-panels of exactly 0.5 x 0.5 deg^2 = 1 x 1 deg^2
+    # degree_extent = extent + buffer
+    # tile_width = 0.25
+
+    # ------------ 15x15 deg, Agulhas for emulator TEST!
+    loc = 'Agulhas_15x15'
+  #  lat_center = 37.5
+  #  lon_center = -65
+  #  extent = 5.0
+  #  buffer = 0 # a little greater than 1 allows tile_width to trim to 4 sub-panels of exactly 0.5 x 0.5 deg^2 = 1 x 1 deg^2
+    degree_extent = 15 #extent + buffer
     tile_width = 0.25
-
-
+    face = 1
+    i_0, i_1 = 2880, 3600
+    j_0, j_1 = 720, 1440
 
     # temporal extent of the calculation/time series
-    t_0 = 432
-    t_1 = t_0 + (365*24) 
+    t_0 = 9216
+    t_1 = 9960#t_0 + (365*24) 
 
 
     # exp name, data_dir
@@ -219,29 +229,32 @@ def main():
 
 
     # open LLC4320 and chunk: k should be full-column per chunk for .min(dim="k")
-    LLC_full = xr.open_zarr('/orcd/data/abodner/003/LLC4320/LLC4320',consolidated=False, chunks={"time": 96,"k": -1,"i": -1,"j": -1,},)
+    LLC_full = xr.open_zarr('/orcd/data/abodner/003/LLC4320/LLC4320',consolidated=False)#, chunks={"time": 96,"k": -1,"i": -1,"j": -1,},)
 
                         # # select temporal extent, select face
                         # LLC_sub = LLC_face.isel(time=slice(t_0,t_1), face = face, i = slice(i_0,i_1), j = slice(j_0,j_1))[['Theta','Salt','Z','XC','YC','rA']]
 
 
-     # select [i,j] spatial box, face, temporal subset
-    boxes = llc_latlon_box_indices(
-    LLC_full,
-    lat_center=lat_center,
-    lon_center=lon_center,
-    degree_extent=degree_extent)
+    #  # select [i,j] spatial box, face, temporal subset
+    # boxes = llc_latlon_box_indices(
+    # LLC_full,
+    # lat_center=lat_center,
+    # lon_center=lon_center,
+    # degree_extent=degree_extent)
 
-    subs = []
-    for face, (j0, j1, i0, i1) in boxes.items():
-        subs.append(
-            LLC_full.isel(face=face, j=slice(j0, j1), i=slice(i0, i1))
-        )
+    # subs = []
+    # for face, (j0, j1, i0, i1) in boxes.items():
+    #     subs.append(
+    #         LLC_full.isel(face=face, j=slice(j0, j1), i=slice(i0, i1))
+    #     )
 
-    LLC_sub = xr.concat(subs, dim="face")
+    # LLC_sub = xr.concat(subs, dim="face")
 
     # select temporal extent
-    LLC_sub = LLC_sub.isel(time=slice(t_0,t_1))[['Theta','Salt','Z','XC','YC','rA']]
+  #  LLC_sub = LLC_sub.isel(time=slice(t_0,t_1))[['Theta','Salt','Z','XC','YC','rA']]
+
+    # select spatial and temporal extent
+    LLC_sub = LLC_full.isel(time=slice(t_0,t_1), i = slice(i_0, i_1), j = slice(j_0,j_1), face = face)[['Theta','Salt','Z','XC','YC','rA']]
 
 
     """
@@ -251,9 +264,9 @@ def main():
     YC = LLC_sub.YC 
     XC = LLC_sub.XC 
     lat_min = float(YC.min()) 
-    lat_max = float(YC.max()) 
+    #lat_max = float(YC.max()) 
     lon_min = float(XC.min()) 
-    lon_max = float(XC.max())
+    #lon_max = float(XC.max())
     
     # compute tile labels eagerly (small arrays)
     tile_lat = ((LLC_sub.YC - lat_min) / tile_width).astype("int32").compute()

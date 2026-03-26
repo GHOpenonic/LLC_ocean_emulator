@@ -9,7 +9,8 @@ The methods are as follows:
 2. Set params
 3. Open and subset LLC4320
 4. Calculate the MLD per pixel
-5. Append to zarr
+5. Take monthly averages
+6. Append to zarr
 
 """
 
@@ -96,7 +97,8 @@ def main():
         scalene_profiler.start()
     
 
-    n_workers=7
+    n_workers=1 #4
+    
     mem_gb = slurm_mem / 1024
     logger.info(f'{mem_gb}GB')
     worker_mem = f"{0.9 * mem_gb / n_workers:.1f}GB"
@@ -105,7 +107,8 @@ def main():
         threads_per_worker = slurm_cpus // n_workers,
         memory_limit=worker_mem,
         dashboard_address=None,
-        local_directory="/tmp")
+        local_directory="/tmp",
+        processes = False,)
     client = Client(cluster)
     logger.info(f'{client}')
 
@@ -118,19 +121,14 @@ def main():
 
 
     # temporal extent of the calculation/time series
-    t_llc_offset = 432
-    t_iter = 1460#(365 * 24)
-    t_0 = t_llc_offset + exp_n * t_iter
-    t_1 = t_0 + t_iter 
-
-    # face
-    #face = 7
+    t_0 = 432
+    t_1 = t_0 + int(365 * 24)
 
     # FOR TESTING: horizontal slices:
     h_0, h_1  = 0, 4320
 
     # exp name
-    exp_name = str(slurm_job_name)+ f'_exp:{exp_n}'+ f'_({t_0},{t_1})'+f'_all_faces' #+ f'_{h_0,},{h_1}'
+    exp_name = str(slurm_job_name) + f'_({t_0},{t_1})'
 
     logger.info(f'Experiment: {exp_name}')
 
@@ -139,51 +137,76 @@ def main():
     """
 
     # open LLC4320 and slice to correct time slice and face
-    LLC_sub = xr.open_zarr('/orcd/data/abodner/003/LLC4320/LLC4320',consolidated=False)[['Theta', 'Salt', 'Z','XC','YC']].isel(time=slice(t_0,t_1), i = slice(h_0, h_1),j=slice(h_0,h_1))
+    LLC_sub = xr.open_zarr('/orcd/data/abodner/003/LLC4320/LLC4320',consolidated=False)[['Theta', 'Salt', 'Z']].isel(time=slice(t_0,t_1), i = slice(h_0, h_1),j=slice(h_0,h_1))
 
-    """
-    4. Calculate MLD per pixel
-    """
+    time_index = pd.to_datetime(LLC_sub.time.values)
 
-    MLD_pixels = xr.apply_ufunc( # use ufunc along single columns to manage memory
-        calc_MLD_col,
-        LLC_sub.Theta,
-        LLC_sub.Salt,
-        LLC_sub.Z,
-        input_core_dims=[["k"], ["k"], ["k"]],
-        output_core_dims=[[]],
-        vectorize = False,
-        dask="parallelized",
-        output_dtypes=[np.float32],)
+    month_starts = pd.date_range(start=time_index.min().to_period("M").to_timestamp(),end=time_index.max().to_period("M").to_timestamp(),freq="MS")
+    month_ends = (month_starts[1:] - pd.Timedelta(hours=1)).append(pd.Index([time_index.max()]))
 
-    logger.info(f"MLD calculation time elapsed: {(time.perf_counter() - t0)/60:.3f} minutes")
+    # select month
+    LLC_months = LLC_sub.sel(time=slice(month_starts[exp_n],month_ends[exp_n]))
 
-    """
-    5. Append to zarr
-    """
-    t1 = time.perf_counter()
-    logger.info(f'Append to zarr')
+    # rechunk
+    LLC_months = LLC_months.chunk({"time": -1, 'face': 1, 'k': -1, 'j': 4320, 'i': 4320})
 
-    mld_4d = MLD_pixels#.expand_dims(face=[face]) 
+    logger.info(f'begin face loop: {(time.perf_counter() - t0)/60:.3f} minutes')
 
-    # Reorder to match: (time, face, j, i)
-    mld_4d = mld_4d.transpose("time", "face", "j", "i")
+    # loop through faces:
+    for face_n, face in enumerate(LLC_months.face):
+        t1 = time.perf_counter()
 
-    MLD_intermediary = xr.Dataset({"MLD": mld_4d.drop_vars(['XC', 'YC', 'Z'], errors='ignore')}).chunk({"time": 730})
+        # grab one face:
+        LLC_face = LLC_months.isel(face=face_n)
+        """
+        4. Calculate MLD per pixel
+        """
 
+        MLD_pixels = xr.apply_ufunc( # use ufunc along single columns to manage memory
+            calc_MLD_col,
+            LLC_face.Theta,
+            LLC_face.Salt,
+            LLC_face.Z,
+            input_core_dims=[["k"], ["k"], ["k"]],
+            output_core_dims=[[]],
+            vectorize = False,
+            dask="parallelized",
+            output_dtypes=[np.float32],)
 
-    MLD_intermediary.to_zarr(
-        "/orcd/data/abodner/002/cody/MLD_llc4320/MLD_ds_large_spatial_test.zarr",
-        region={
-            "time": slice(t_0 - t_llc_offset, t_1),
-            "face": slice(0,13),
-            "j": slice(0, h_1 - h_0),
-            "i": slice(0, h_1 - h_0),
-        },
-        zarr_format = 2
-    )
+        """
+        5. Take monthly averages
+        """
 
-    logger.info(f"zarr storage time elapsed: {(time.perf_counter() - t1)/60:.3f} minutes")
+        MLD_pixels_monthly = MLD_pixels.mean(dim='time')
+
+        # add time and face dims back
+        MLD_pixels_monthly = MLD_pixels_monthly.expand_dims(time=[month_starts[exp_n]],face=[face_n])
+
+        """
+        6. Append to zarr
+        """
+
+       # logger.info(f'Append to zarr')
+
+        mld_4d = MLD_pixels_monthly#.expand_dims(face=[face]) 
+
+        # Reorder to match: (time, face, j, i)
+        mld_4d = mld_4d.transpose("time", "face", "j", "i")
+
+        MLD_intermediary = xr.Dataset({"MLD": mld_4d.drop_vars(['Z'], errors='ignore')})
+
+        MLD_intermediary.to_zarr(
+            "/orcd/data/abodner/002/cody/MLD_llc4320/MLD_llc4320_monthly.zarr",
+            region={
+                "time": slice(exp_n, exp_n + 1),
+                "face": slice(face_n,face_n + 1),
+                "j": slice(0, h_1 - h_0),
+                "i": slice(0, h_1 - h_0),
+            },
+            zarr_format = 2,
+        )
+
+        logger.info(f"face_{face_n} complete: {(time.perf_counter() - t1)/60:.3f} minutes")
     logger.info(f"total time elapsed: {(time.perf_counter() - t0)/60:.3f} minutes")
 
     if scalene_flag:
@@ -192,12 +215,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-    """
-    I need help creating an effective memory/cpu allocation and dask workers/threads and zarr chunking/writing strategy for calculating and saving mixed layer depth per pixel (1/48 by 1/48 degrees) for the entire, global LLC4320 dataset for one year (data is hourly). There are 51 depth levels (upper 1000m). The data is saved as a zarr with chunks: time 1hr, depth 51 (all levels per chunk), 720 i, 720j, face 1 (where there are 13 faces for the globe). I want to save the calculated MLD as a zarr with chunks: time T, 720i,720j, face 1 where T is variable. Note that there are 8760 hours in the year.
-
-In terms of compute, my node has 800 GB RAM, up to 60 CPUS. I have storage space for this.
-Here are experiments I've tried which have failed due to memory or I/O or dask graph size issues:
-T = 24, 168, 365, 720 (with various RAM and cpus allocations that I thought would make sense for the test).
-It seems across the board from my logs that the actual calculation takes 1/2 to 1-2 min (significant improvement entirely due to numba as opposed to u_func parallel vectorization which was slower). The bottleneck is writing to zarr. I want to be able to calculate and save this reasonably quickly. While I"ll probably be mostly doing 
-"""

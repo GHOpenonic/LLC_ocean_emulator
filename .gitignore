@@ -29,3 +29,7 @@ high_res_diagnostics/VHF/scalene/
 # ignore videos/frames
 high_res_diagnostics/MLD/high-res-video/Agulhas
 high_res_diagnostics/MLD/high-res-video/North_Pacific
+
+*.gif
+
+high_res_diagnostics/MLD/figs

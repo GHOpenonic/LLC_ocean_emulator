@@ -96,7 +96,7 @@ def main():
         scalene_profiler.start()
     
 
-    n_workers=4
+    n_workers=7 #4
     mem_gb = slurm_mem / 1024
     logger.info(f'{mem_gb}GB')
     worker_mem = f"{0.9 * mem_gb / n_workers:.1f}GB"
@@ -114,12 +114,12 @@ def main():
     """
     logger.info('Set params')
     # write exp_n ---------------------------------------------
-    exp_n = 1
+    exp_n = 0
 
 
     # temporal extent of the calculation/time series
     t_llc_offset = 432
-    t_iter = 1460#(365 * 24)
+    t_iter = 240 #(365 * 24)
     t_0 = t_llc_offset + exp_n * t_iter
     t_1 = t_0 + t_iter 
 
@@ -140,6 +140,9 @@ def main():
 
     # open LLC4320 and slice to correct time slice and face
     LLC_sub = xr.open_zarr('/orcd/data/abodner/003/LLC4320/LLC4320',consolidated=False)[['Theta', 'Salt', 'Z','XC','YC']].isel(time=slice(t_0,t_1), i = slice(h_0, h_1),j=slice(h_0,h_1))
+
+    # rechunk for processing
+    LLC_sub = LLC_sub.chunk({"time": 120, 'face': 1, 'k': -1, 'j': 720, 'i': 720})
 
     """
     4. Calculate MLD per pixel
@@ -169,18 +172,22 @@ def main():
     # Reorder to match: (time, face, j, i)
     mld_4d = mld_4d.transpose("time", "face", "j", "i")
 
-    MLD_intermediary = xr.Dataset({"MLD": mld_4d.drop_vars(['XC', 'YC', 'Z'], errors='ignore')}).chunk({"time": 730})
+    MLD_intermediary = xr.Dataset({"MLD": mld_4d.drop_vars(['XC', 'YC', 'Z'], errors='ignore')})
 
 
+    import dask.utils
+    lock = dask.utils.SerializableLock()
     MLD_intermediary.to_zarr(
-        "/orcd/data/abodner/002/cody/MLD_llc4320/MLD_ds.zarr",
+        "/orcd/data/abodner/002/cody/MLD_llc4320/MLD_llc4320.zarr",
         region={
             "time": slice(t_0 - t_llc_offset, t_1 - t_llc_offset),
             "face": slice(0,13),
             "j": slice(0, h_1 - h_0),
             "i": slice(0, h_1 - h_0),
         },
-        zarr_format = 2
+        zarr_format = 2,
+        synchronizer=zarr.ThreadSynchronizer(),
+        safe_chunks=True
     )
 
     logger.info(f"zarr storage time elapsed: {(time.perf_counter() - t1)/60:.3f} minutes")
