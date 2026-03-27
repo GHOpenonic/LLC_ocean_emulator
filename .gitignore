@@ -33,3 +33,5 @@ high_res_diagnostics/MLD/high-res-video/North_Pacific
 *.gif
 
 high_res_diagnostics/MLD/figs
+
+/high_res_diagnostics/statistical_diagnostics/figs
