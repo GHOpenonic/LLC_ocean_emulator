@@ -26,10 +26,10 @@ logs/
 # Ignore scalene output folder
 high_res_diagnostics/VHF/scalene/
 
-# ignore videos/frames
+# ignore videos/frames and figures
 high_res_diagnostics/MLD/high-res-video/Agulhas
 high_res_diagnostics/MLD/high-res-video/North_Pacific
-
+*.png
 *.gif
 
 high_res_diagnostics/MLD/figs
