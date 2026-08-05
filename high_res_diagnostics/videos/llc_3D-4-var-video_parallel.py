@@ -48,18 +48,25 @@ llc_patch_full = xr.open_zarr('/orcd/data/abodner/003/LLC4320/LLC4320', consolid
 # ============== LOAD EMULATORS ==============================
 # ============================================================
 emulator_configs = [
-    {
-        'name': 'rb-pred-resid-eager-ckpt-40',
+    # {
+    #     'name': 'rb-pred-resid-field-ckpt-50',
+    #     'key': 'emulator_1',
+    #     'path': '/orcd/data/abodner/002/cody/inference_patch/2026-07-20-eval:Samudra_LLC:rb-Agulhas-pred_field-eager-ckpt50-fixed-18406515/predictions_4d.zarr',
+    #     'desc': ''
+    # },
+        {
+        'name': 'rb-pred-resid-eager-ckpt-50',
         'key': 'emulator_1',
-        'path': '/orcd/data/abodner/002/cody/inference_patch/2026-07-15-eval:Samudra_LLC:rb-Agulhas-pred_resid-reg-ckpt40-17993072/predictions_4d.zarr',
+        'path': '/orcd/data/abodner/002/cody/inference_patch/2026-07-20-eval:Samudra_LLC:rb-Agulhas-pred_resid-eager-ckpt50-fixed-3weeks-18427424/predictions_4d_extended-18444486.zarr',
         'desc': ''
     },
     # {
-    #     'name': 'rb-pred-resid-reg-ckpt-25',
+    #     'name': 'rb-Agulhas-strides=1-pred_field-ckpt-25',
     #     'key': 'emulator_2',
-    #     'path': '/orcd/data/abodner/002/cody/inference_patch/2026-07-13-eval:Samudra_LLC:rb-Agulhas-pred_resid-reg-ckpt25-17850330/predictions_4d.zarr',
-    #     'desc': ''
+    #     'path': '/orcd/data/abodner/002/cody/inference_patch/rb/2026-07-06-eval:Samudra_LLC:rb-Agulhas-strides=1-pred_field-ckpt-25-17335589/predictions_4d.zarr',
+    #     'desc': ''   
     # },
+
 ]
 
 # ============== OPEN EMULATOR DATASETS ==============
@@ -122,8 +129,8 @@ for name, key in emulator_info:
     logger.info(f"  {name} ({key})")
 
 # ============== TIME SUBSET / SYNC ==============
-selected_time_range = [0, 336]   # inclusive indices
-stepping = 1                     # 1 = every timestep, 4 = every 4th timestep
+selected_time_range = [0, 696]   # inclusive indices
+stepping = 1 
 
 start_idx, end_idx = selected_time_range
 
@@ -181,7 +188,7 @@ model_order = [('LLC4320', 'llc')] + emulator_info      # [(display_name, key), 
 n_models = len(model_order)
 
 # ── Variable (row) selection ───────────────────────────────────────
-selected_variables = ['Theta','V']
+selected_variables = ['Theta', 'Salt', 'U', 'V']
 n_vars = len(selected_variables)
 
 cmaps = {
@@ -198,8 +205,8 @@ units = {
 }
 
 # ── Params ──────────────────────────────────────────────────────────
-i_0, i_1 = 0, 719
-j_0, j_1 = 0, 719
+i_0, i_1 = 0, 480
+j_0, j_1 = 0, 480
 k_max = 51
 n_times = llc_patch.sizes['time']
 fps = 24
@@ -237,30 +244,34 @@ def _horizontal_dims(da):
         raise ValueError(f"Expected 2 horizontal dims, got {da.dims}")
     return hdims[0], hdims[1]   # (y, x): j/lat first, i/lon second
 
-logger.info("Preloading visible faces into RAM (float32)...")
-faces = {}   # faces[model_key][var] = {'surface':..., 'south':..., 'east':...}
-for _, model_key in model_order:
-    sub = all_patches[model_key].isel(
-        i=slice(i_0, i_1 + 1),
-        j=slice(j_0, j_1 + 1),
-        k=slice(0, k_max),
-    ) if 'i' in all_patches[model_key].dims else all_patches[model_key].isel(
-        k=slice(0, k_max),
-    )
+logger.info("Preloading visible faces into RAM (float16)...")
+faces = {}
 
+for _, model_key in model_order:
+    ds = all_patches[model_key]
     faces[model_key] = {}
+
     for var in selected_variables:
-        v = sub[var]
+        v = ds[var].isel(k=slice(0, k_max))
+
         y_dim, x_dim = _horizontal_dims(v)
-        ny, nx = v.sizes[y_dim], v.sizes[x_dim]
+
+        v = v.isel({
+            y_dim: slice(j_0, j_1),
+            x_dim: slice(i_0, i_1),
+        })
+
+        ny = v.sizes[y_dim]
+        nx = v.sizes[x_dim]
 
         faces[model_key][var] = {
-            'surface': v.isel({'k': 0}).load().values.astype(np.float32),        # (t, y, x)
-            'south':   v.isel({y_dim: 0}).load().values.astype(np.float32),      # (t, k, x)
-            'east':    v.isel({x_dim: nx - 1}).load().values.astype(np.float32), # (t, k, y)
+            "surface": v.isel(k=0).load().values.astype(np.float16),
+            "south": v.isel({y_dim: 0}).load().values.astype(np.float16),
+            "east": v.isel({x_dim: nx - 1}).load().values.astype(np.float16),
         }
+
         logger.info(
-            f"  {model_key}/{var}  [{y_dim}={ny}, {x_dim}={nx}]: "
+            f"  {model_key}/{var} [{y_dim}={ny}, {x_dim}={nx}]: "
             f"surface{faces[model_key][var]['surface'].shape} "
             f"south{faces[model_key][var]['south'].shape} "
             f"east{faces[model_key][var]['east'].shape}"

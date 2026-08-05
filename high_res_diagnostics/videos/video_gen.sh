@@ -1,12 +1,12 @@
 #!/bin/bash
 #SBATCH -p pi_abodner
-#SBATCH --job-name=llc_emulator_3D-theta-video-full-ckpt40-parallel
+#SBATCH --job-name=8-5-26-llc_emulator_3D-video-full-ckpt50-parallel-all-vars-0:480
 #SBATCH -N 1
 #SBATCH --ntasks-per-node=1
 #SBATCH --mem=850GB
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=60
-#SBATCH --time=00-24:00:00
+#SBATCH --cpus-per-task=46
+#SBATCH --time=00-2:00:00
 #SBATCH -o /home/codycruz/LLC_ocean_emulator/high_res_diagnostics/videos/logs/%x-%j.out
 #SBATCH -e /home/codycruz/LLC_ocean_emulator/high_res_diagnostics/videos/logs/%x-%j.out
 
