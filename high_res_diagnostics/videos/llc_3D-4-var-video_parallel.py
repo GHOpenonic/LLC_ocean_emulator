@@ -129,7 +129,7 @@ for name, key in emulator_info:
     logger.info(f"  {name} ({key})")
 
 # ============== TIME SUBSET / SYNC ==============
-selected_time_range = [0, 696]   # inclusive indices
+selected_time_range = [0, 48]   # inclusive indices
 stepping = 1 
 
 start_idx, end_idx = selected_time_range
@@ -205,11 +205,12 @@ units = {
 }
 
 # ── Params ──────────────────────────────────────────────────────────
-i_0, i_1 = 0, 480
-j_0, j_1 = 0, 480
+i_0, i_1 = 200, 220
+j_0, j_1 = 200, 220
+k_min = 0
 k_max = 51
 n_times = llc_patch.sizes['time']
-fps = 24
+fps = 1
 
 # Surface-mesh decimation.
 # The TOP surface is 720x720 -> expensive, safe to decimate.
@@ -252,7 +253,7 @@ for _, model_key in model_order:
     faces[model_key] = {}
 
     for var in selected_variables:
-        v = ds[var].isel(k=slice(0, k_max))
+        v = ds[var].isel(k=slice(k_min, k_max))
 
         y_dim, x_dim = _horizontal_dims(v)
 
@@ -265,7 +266,7 @@ for _, model_key in model_order:
         nx = v.sizes[x_dim]
 
         faces[model_key][var] = {
-            "surface": v.isel(k=0).load().values.astype(np.float16),
+            "surface": v.isel(k=k_min).load().values.astype(np.float16),
             "south": v.isel({y_dim: 0}).load().values.astype(np.float16),
             "east": v.isel({x_dim: nx - 1}).load().values.astype(np.float16),
         }
@@ -301,7 +302,7 @@ for var in selected_variables:
 # ============================================================
 i_vals = np.arange(i_0, i_1 + 1)
 j_vals = np.arange(j_0, j_1 + 1)
-z_vals = llc_patch.isel(k=slice(0, k_max))["Z"].values
+z_vals = llc_patch.isel(k=slice(k_min, k_max))["Z"].values
 
 I_surf, J_surf = np.meshgrid(i_vals, j_vals)
 Z_surf = np.full_like(I_surf, z_vals[0], dtype=float)

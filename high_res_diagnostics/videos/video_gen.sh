@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH -p pi_abodner
-#SBATCH --job-name=8-5-26-llc_emulator_3D-video-full-ckpt50-parallel-all-vars-0:480
+#SBATCH --job-name=8-5-26-llc_emulator_3D-video-full-ckpt50-parallel-all-vars-200:220,k=0:51
 #SBATCH -N 1
 #SBATCH --ntasks-per-node=1
 #SBATCH --mem=850GB
