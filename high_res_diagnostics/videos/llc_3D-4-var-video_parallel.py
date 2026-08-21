@@ -1,4 +1,5 @@
 # dependencies
+import argparse
 import os
 
 # ── Threading hygiene: keep each of the 60 processes single-threaded ──
@@ -47,28 +48,21 @@ llc_patch_full = xr.open_zarr('/orcd/data/abodner/003/LLC4320/LLC4320', consolid
 # ============================================================
 # ============== LOAD EMULATORS ==============================
 # ============================================================
+
 emulator_configs = [
-    # {
-    #     'name': 'rb-pred-resid-field-ckpt-50',
-    #     'key': 'emulator_1',
-    #     'path': '/orcd/data/abodner/002/cody/inference_patch/2026-07-20-eval:Samudra_LLC:rb-Agulhas-pred_field-eager-ckpt50-fixed-18406515/predictions_4d.zarr',
-    #     'desc': ''
-    # },
-        {
-        'name': 'rb-pred-resid-eager-ckpt-50',
+    {
+        'name': '720x720',
         'key': 'emulator_1',
         'path': '/orcd/data/abodner/002/cody/inference_patch/2026-07-20-eval:Samudra_LLC:rb-Agulhas-pred_resid-eager-ckpt50-fixed-3weeks-18427424/predictions_4d_extended-18444486.zarr',
         'desc': ''
     },
-    # {
-    #     'name': 'rb-Agulhas-strides=1-pred_field-ckpt-25',
-    #     'key': 'emulator_2',
-    #     'path': '/orcd/data/abodner/002/cody/inference_patch/rb/2026-07-06-eval:Samudra_LLC:rb-Agulhas-strides=1-pred_field-ckpt-25-17335589/predictions_4d.zarr',
-    #     'desc': ''   
-    # },
-
+        {
+        'name': 'fixed_grad_z-0.1',
+        'key': 'emulator_2',
+        'path': '/orcd/data/abodner/002/cody/inference_patch/2026-08-20-eval:samudra_rb_llc:1-tile-all_3D_var_and_corrected_grad_z_loss-lambda_z-0.1-20851948/predictions_4d.zarr',
+        'desc': ''
+    },
 ]
-
 # ============== OPEN EMULATOR DATASETS ==============
 emulator_patches_raw = {}
 for cfg in emulator_configs:
@@ -129,7 +123,7 @@ for name, key in emulator_info:
     logger.info(f"  {name} ({key})")
 
 # ============== TIME SUBSET / SYNC ==============
-selected_time_range = [0, 48]   # inclusive indices
+selected_time_range = [0, 456]   # inclusive indices
 stepping = 1 
 
 start_idx, end_idx = selected_time_range
@@ -188,7 +182,7 @@ model_order = [('LLC4320', 'llc')] + emulator_info      # [(display_name, key), 
 n_models = len(model_order)
 
 # ── Variable (row) selection ───────────────────────────────────────
-selected_variables = ['Theta', 'Salt', 'U', 'V']
+selected_variables = ['Theta', 'Salt', 'U']#, 'V']
 n_vars = len(selected_variables)
 
 cmaps = {
@@ -205,12 +199,12 @@ units = {
 }
 
 # ── Params ──────────────────────────────────────────────────────────
-i_0, i_1 = 200, 220
-j_0, j_1 = 200, 220
+i_0, i_1 = 0, 719
+j_0, j_1 = 0, 719
 k_min = 0
 k_max = 51
 n_times = llc_patch.sizes['time']
-fps = 1
+fps = 24
 
 # Surface-mesh decimation.
 # The TOP surface is 720x720 -> expensive, safe to decimate.
@@ -411,21 +405,69 @@ def render_frame(frame_idx):
 # ============================================================
 # ============== DISPATCH + ENCODE ===========================
 # ============================================================
-def main():
-    n_workers = int(os.environ.get("SLURM_CPUS_PER_TASK", mp.cpu_count() or 1))
-    n_workers = max(1, min(n_workers, n_times))
-    logger.info(f"Rendering {n_times} frames on {n_workers} workers "
-                f"(rstride/cstride={RSTRIDE}/{CSTRIDE})...")
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Render LLC 3D video frames and encode MP4/GIF outputs."
+    )
+    parser.add_argument(
+        "--mode",
+        choices=("full", "fill"),
+        default="full",
+        help=(
+            "full: render every frame before encoding (default); "
+            "fill: render only missing or empty PNG frames before encoding"
+        ),
+    )
+    return parser.parse_args()
 
-    # 'fork' (Linux default) lets workers share the preloaded `faces` arrays
-    # copy-on-write, so we do NOT duplicate the data 60x in RAM.
-    ctx = mp.get_context("fork")
-    with ctx.Pool(processes=n_workers, initializer=_init_worker) as pool:
-        done = 0
-        for _ in pool.imap_unordered(render_frame, range(n_times), chunksize=1):
-            done += 1
-            if done % 10 == 0 or done == n_times:
-                logger.info(f"  frames done: {done}/{n_times}")
+
+def missing_frame_indices():
+    """Return expected frame indices whose PNG is absent or empty."""
+    return [
+        frame_idx
+        for frame_idx in range(n_times)
+        if not os.path.isfile(f"{FRAME_DIR}/frame_{frame_idx:05d}.png")
+        or os.path.getsize(f"{FRAME_DIR}/frame_{frame_idx:05d}.png") == 0
+    ]
+
+
+def main():
+    args = parse_args()
+    n_workers = int(os.environ.get("SLURM_CPUS_PER_TASK", mp.cpu_count() or 1))
+    if args.mode == "fill":
+        frame_indices = missing_frame_indices()
+        logger.info(
+            f"Fill mode: found {len(frame_indices)} missing or empty frames "
+            f"in {FRAME_DIR} (expected {n_times} total)."
+        )
+    else:
+        frame_indices = list(range(n_times))
+
+    if frame_indices:
+        n_workers = max(1, min(n_workers, len(frame_indices)))
+        logger.info(f"Rendering {len(frame_indices)} frames on {n_workers} workers "
+                    f"(rstride/cstride={RSTRIDE}/{CSTRIDE})...")
+
+        # 'fork' (Linux default) lets workers share the preloaded `faces` arrays
+        # copy-on-write, so we do NOT duplicate the data 60x in RAM.
+        ctx = mp.get_context("fork")
+        with ctx.Pool(processes=n_workers, initializer=_init_worker) as pool:
+            done = 0
+            for _ in pool.imap_unordered(render_frame, frame_indices, chunksize=1):
+                done += 1
+                if done % 10 == 0 or done == len(frame_indices):
+                    logger.info(f"  frames done: {done}/{len(frame_indices)}")
+    else:
+        logger.info("All expected frames already exist; skipping rendering.")
+
+    remaining = missing_frame_indices()
+    if remaining:
+        preview = ", ".join(f"{idx:05d}" for idx in remaining[:10])
+        suffix = "..." if len(remaining) > 10 else ""
+        raise RuntimeError(
+            f"Cannot encode: {len(remaining)} frames are still missing or empty "
+            f"in {FRAME_DIR} (first: {preview}{suffix})"
+        )
 
     # ── Stitch PNGs → MP4 (fast, high quality) ──
     mp4_out = f"{path_out}/llc_3D_{n_vars}x{n_models}-full.mp4"
