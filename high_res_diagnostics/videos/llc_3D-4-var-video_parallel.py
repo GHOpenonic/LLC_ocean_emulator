@@ -21,6 +21,8 @@ import zarr
 import dask
 import subprocess
 import multiprocessing as mp
+from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 import time
 
 # ── Headless backend, MUST be set before pyplot is used ──
@@ -56,6 +58,8 @@ def _cpu_budget():
 
 
 N_CPUS = _cpu_budget()
+# Frames each render worker draws before its pool is replaced (bounds memory creep).
+FRAMES_PER_WORKER = int(os.environ.get("VIDEO_FRAMES_PER_WORKER", "6"))
 logger.info(f"CPU budget: {N_CPUS}")
 
 # The preload below is the only phase that benefits from threads: it is pure
@@ -69,22 +73,79 @@ import sys
 sys.path.insert(0, '/home/codycruz/LLC_ocean_emulator/high_res_diagnostics/1-face_diagnostics/scripts')
 from diag_common import LLC_STORE, format_time, load_patches
 
-# Domain/time/emulator knobs come from video_gen.sh.
-EMULATOR_NAME = os.environ.get("VIDEO_EMULATOR_NAME", "1-face-ckpt4")
-EMULATOR_PATH = os.environ.get(
-    "VIDEO_EMULATOR_PATH",
-    "/orcd/data/abodner/002/cody/inference_patch/1-face/epoch4-ema-quintic-20121014-20121021-25047717/predictions_4d.zarr")
-I_EXTENT = [int(x) for x in os.environ.get("VIDEO_I_EXTENT", "2880 3600").split()]
-J_EXTENT = [int(x) for x in os.environ.get("VIDEO_J_EXTENT", "720 1440").split()]
-selected_time_range = [int(x) for x in os.environ.get("VIDEO_TIME_RANGE", "0 71").split()]   # inclusive
-stepping = int(os.environ.get("VIDEO_STEPPING", 1))
-REGION_NAME = os.environ.get("VIDEO_REGION_NAME", f"i[{I_EXTENT[0]}:{I_EXTENT[1]}] j[{J_EXTENT[0]}:{J_EXTENT[1]}]")
+def env_list(name, default=""):
+    """Parse a space-separated environment variable."""
+    return os.environ.get(name, default).split()
 
-emulator_configs = [{'name': EMULATOR_NAME, 'key': 'emulator_1', 'path': EMULATOR_PATH, 'desc': ''}]
-# chunks={}: dask-backed emulator, so the face preload reads each chunk once and in parallel.
+
+# Domain/time/emulator knobs come from video_gen.sh
+emulator_names = env_list(
+    "VIDEO_EMULATOR_NAME",
+    "1-face-ckpt4",
+)
+
+emulator_paths = env_list(
+    "VIDEO_EMULATOR_PATH",
+    "/orcd/data/abodner/002/cody/inference_patch/"
+    "1-face/epoch4-ema-quintic-20121014-20121021-25047717/"
+    "predictions.zarr",
+)
+
+if len(emulator_names) != len(emulator_paths):
+    raise ValueError(
+        "VIDEO_EMULATOR_NAME and VIDEO_EMULATOR_PATH must contain "
+        f"the same number of entries. "
+        f"Got {len(emulator_names)} names and {len(emulator_paths)} paths."
+    )
+
+
+I_EXTENT = [
+    int(x)
+    for x in os.environ.get("VIDEO_I_EXTENT", "2880 3600").split()
+]
+
+J_EXTENT = [
+    int(x)
+    for x in os.environ.get("VIDEO_J_EXTENT", "720 1440").split()
+]
+
+selected_time_range = [
+    int(x)
+    for x in os.environ.get("VIDEO_TIME_RANGE", "0 71").split()
+]  # inclusive
+
+stepping = int(os.environ.get("VIDEO_STEPPING", "1"))
+
+REGION_NAME = os.environ.get(
+    "VIDEO_REGION_NAME",
+    f"i[{I_EXTENT[0]}:{I_EXTENT[1]}] "
+    f"j[{J_EXTENT[0]}:{J_EXTENT[1]}]",
+)
+
+
+# Build one configuration dictionary per emulator
+emulator_configs = [
+    {
+        "name": name,
+        "key": f"emulator_{idx + 1}",
+        "path": path,
+        "desc": "",
+    }
+    for idx, (name, path) in enumerate(
+        zip(emulator_names, emulator_paths)
+    )
+]
+
+
 llc_patch, emulator_patches, emulator_info, all_patches = load_patches(
-    emulator_configs, slice(*I_EXTENT), slice(*J_EXTENT), selected_time_range, stepping,
-    emulator_chunks={})
+    emulator_configs,
+    slice(*I_EXTENT),
+    slice(*J_EXTENT),
+    selected_time_range,
+    stepping,
+    emulator_chunks={},
+)
+
 n_emulators = len(emulator_info)
 
 # ============================================================
@@ -114,6 +175,24 @@ units = {
     'W':     'W [m/s]'
 }
 
+# ── Extra panel knobs (from video_gen.sh) ───────────────────────────
+GRADIENTS = os.environ.get("VIDEO_GRADIENTS", "0") == "1"
+ERRORS = os.environ.get("VIDEO_ERRORS", "0") == "1"
+
+# Columns per row: (kind, model_key, title); kind is 'field', 'grad' or 'err'
+columns = []
+for mname, mkey in model_order:
+    columns.append(('field', mkey, mname))
+    if GRADIENTS:
+        columns.append(('grad', mkey, f"{mname} gradients"))
+if ERRORS:
+    columns += [('err', mkey, f"{mname} − LLC") for mname, mkey in emulator_info]
+n_cols = len(columns)
+TAG = f"{n_vars}x{n_cols}" + ("-grad" if GRADIENTS else "") + ("-err" if ERRORS else "")
+
+# float16 rounds away neighbour/emulator differences, so derived panels need float32
+FACE_DTYPE = np.float32 if (GRADIENTS or ERRORS) else np.float16
+
 # ── Params ──────────────────────────────────────────────────────────
 # Offsets INTO the loaded patch (the domain itself is VIDEO_I/J_EXTENT).
 i_0, i_1 = 0, llc_patch.sizes['i'] - 1
@@ -121,7 +200,7 @@ j_0, j_1 = 0, llc_patch.sizes['j'] - 1
 k_min = 0
 k_max = 51
 n_times = llc_patch.sizes['time']
-fps = 6
+fps = 24
 
 # Surface-mesh decimation.
 # The TOP surface is 720x720 -> expensive, safe to decimate.
@@ -131,13 +210,13 @@ fps = 6
 # ~2 quads per pixel; stride 2 halves the mesh in each direction for no
 # visible change and is the single biggest remaining lever if you need the
 # run shorter. Overridable so you don't have to edit the file.
-SURF_RSTRIDE = int(os.environ.get("VIDEO_SURF_STRIDE", 4))   # top surface (j, i)
+SURF_RSTRIDE = int(os.environ.get("VIDEO_SURF_STRIDE", 1))   # top surface (j, i)
 SURF_CSTRIDE = SURF_RSTRIDE
 WALL_KSTRIDE = 1                     # vertical (k) on walls -> keep full res
 WALL_HSTRIDE = int(os.environ.get("VIDEO_WALL_STRIDE", 1))   # horizontal (i or j)
 
 path_out = '/home/codycruz/LLC_ocean_emulator/high_res_diagnostics/videos/figs'
-FRAME_DIR = f"{path_out}/frames_{n_vars}x{n_models}"
+FRAME_DIR = f"{path_out}/frames_{TAG}"
 os.makedirs(FRAME_DIR, exist_ok=True)
 
 # ── Face cache ──────────────────────────────────────────────────────
@@ -170,6 +249,8 @@ def _face_cache_dir():
         "time_first": str(times[0]),
         "time_last": str(times[-1]),
     }
+    if FACE_DTYPE != np.float16:
+        manifest["dtype"] = "float32"   # only added here so float16 cache keys stay valid
     blob = json.dumps(manifest, sort_keys=True)
     digest = hashlib.sha256(blob.encode()).hexdigest()[:16]
     return f"{FACE_CACHE_ROOT}/{digest}", blob
@@ -271,7 +352,7 @@ def _store_cached_faces(model_key, var, per_face):
         logger.warning(f"  {model_key}/{var}: could not cache ({exc}); continuing.")
 
 
-logger.info(f"Loading visible faces (float16); cache: "
+logger.info(f"Loading visible faces ({np.dtype(FACE_DTYPE).name}); cache: "
             f"{CACHE_DIR if FACE_CACHE_ENABLED else 'disabled'}")
 faces = {}
 _n_cached = 0
@@ -316,9 +397,9 @@ for _, model_key in model_order:
         )
 
         faces[model_key][var] = {
-            "surface": np.asarray(surface, dtype=np.float16),
-            "south": np.asarray(south, dtype=np.float16),
-            "east": np.asarray(east, dtype=np.float16),
+            "surface": np.asarray(surface, dtype=FACE_DTYPE),
+            "south": np.asarray(south, dtype=FACE_DTYPE),
+            "east": np.asarray(east, dtype=FACE_DTYPE),
         }
         del surface, south, east
         _store_cached_faces(model_key, var, faces[model_key][var])
@@ -422,12 +503,71 @@ z_bounds_by_var = {
 z_top, z_bot = z_bounds_by_var[selected_variables[0]]
 edge_kw = dict(color="k", linewidth=0.5)
 
+# ============================================================
+# ============== GRADIENT / ERROR PANELS =====================
+# ============================================================
+# Computed per frame inside the workers; only the colour limits are global.
+DXY = np.sqrt(llc_patch['rA'].isel(j=slice(j_0, j_1), i=slice(i_0, i_1)).values).astype(np.float32)
+
+
+def hgrad(s):
+    """|∇h| of surface field(s) (..., j, i), per metre."""
+    gy, gx = np.gradient(s.astype(np.float32), axis=(-2, -1))
+    return np.hypot(gx, gy) / DXY
+
+
+def vgrad(w, var):
+    """|∂z| of wall field(s) (..., k, x), per metre."""
+    return np.abs(np.gradient(w.astype(np.float32), z_vals_by_var[var], axis=-2))
+
+
+def panel_faces(kind, mkey, var, t):
+    """(surface, south, east) for one panel at frame(s) t."""
+    f = faces[mkey][var]
+    if kind == 'field':
+        return f['surface'][t], f['south'][t], f['east'][t]
+    if kind == 'grad':
+        return hgrad(f['surface'][t]), vgrad(f['south'][t], var), vgrad(f['east'][t], var)
+    llc = faces['llc'][var]
+    return tuple(f[n][t].astype(np.float32) - llc[n][t] for n in FACE_NAMES)   # emulator - llc
+
+
+def panel_keys(kind, var):
+    """Colour-scale key for each of (surface, south, east)."""
+    return {'field': (var,) * 3,
+            'grad': ((var, 'h'), (var, 'v'), (var, 'v')),
+            'err': ((var, 'err'),) * 3}[kind]
+
+
+def _hi(arrs):
+    """Upper colour limit over the given arrays (same clip as the fields)."""
+    return float(np.nanpercentile(np.concatenate([np.ravel(a) for a in arrs]), 100.0 - CLIP_PCT))
+
+
+# Fixed limits for the whole video, from frames spread over the full time range
+sample_t = np.linspace(0, n_times - 1, min(20, n_times)).astype(int)
+for var in selected_variables:
+    if GRADIENTS:
+        gs, gso, ge = panel_faces('grad', 'llc', var, sample_t)
+        norms[(var, 'h')] = mcolors.Normalize(0.0, _hi([gs]))
+        norms[(var, 'v')] = mcolors.Normalize(0.0, _hi([gso, ge]))
+        cmaps[(var, 'h')] = cmaps[(var, 'v')] = plt.cm.Purples
+        units[(var, 'h')], units[(var, 'v')] = f"|∇h {var}| [/m] (top)", f"|∂z {var}| [/m] (walls)"
+    if ERRORS:
+        e = max(_hi([np.abs(a) for a in panel_faces('err', k, var, sample_t)]) for _, k in emulator_info)
+        norms[(var, 'err')] = mcolors.Normalize(-e, e)
+        cmaps[(var, 'err')] = plt.cm.RdBu_r
+        units[(var, 'err')] = f"Δ{units[var]}"
+for key in norms:
+    if key not in selected_variables:
+        logger.info(f"  {key}: [{norms[key].vmin:.3e}, {norms[key].vmax:.3e}]")
+
 # ── Colour lookup ───────────────────────────────────────────────────
 # `cmap(norm(data))` walks a Normalize + Colormap call chain for every one of
 # the 518_400 cells of a face, every frame. A Colormap is a 256-entry table, so
 # quantise once and fancy-index instead: same 256 output colours, one pass.
 _COLOR_LUT = {}
-for _var in selected_variables:
+for _var in norms:
     _cmap = cmaps[_var]
     _COLOR_LUT[_var] = (
         np.asarray(_cmap(np.arange(_cmap.N)), dtype=np.float32),
@@ -590,14 +730,14 @@ def _init_worker():
     limits, labels, titles, box edges, colorbars -- is done here exactly once,
     so `render_frame` is reduced to colour swaps plus the rasterisation.
     """
-    fig = plt.figure(figsize=(5.5 * n_models, 5.0 * n_vars), dpi=100)
+    fig = plt.figure(figsize=(5.5 * n_cols, 5.0 * n_vars), dpi=100)
     meshes = {}
     axes = {}
     for r, var in enumerate(selected_variables):
-        for c, (mname, mkey) in enumerate(model_order):
-            idx = r * n_models + c + 1
-            ax = fig.add_subplot(n_vars, n_models, idx, projection='3d')
-            axes[(var, mkey)] = ax
+        for c, (kind, mkey, mname) in enumerate(columns):
+            idx = r * n_cols + c + 1
+            ax = fig.add_subplot(n_vars, n_cols, idx, projection='3d')
+            axes[(var, c)] = ax
 
             # Fixed limits and view: we skip plot_surface, so nothing
             # autoscales for us -- and the mesh sort order below is only valid
@@ -613,7 +753,7 @@ def _init_worker():
                               WALL_KSTRIDE, WALL_HSTRIDE, zorder=2)
             east = _add_face(ax, I_iwall, J_iwall, Z_iwall_by_var[var],
                              WALL_KSTRIDE, WALL_HSTRIDE, zorder=1)
-            meshes[(var, mkey)] = (surf, south, east)
+            meshes[(var, c)] = (surf, south, east)
 
             ax.set_xlabel("i", labelpad=6, fontsize=7)
             ax.set_ylabel("j", labelpad=6, fontsize=7)
@@ -626,12 +766,14 @@ def _init_worker():
                 ax.text2D(-0.15, 0.5, var, transform=ax.transAxes,
                           fontsize=12, rotation=90, va='center', ha='center')
 
-        # one colorbar per row, on the rightmost axis
-        last_ax = axes[(var, model_order[-1][1])]
-        sm = plt.cm.ScalarMappable(cmap=cmaps[var], norm=norms[var])
-        sm.set_array([])
-        cbar = fig.colorbar(sm, ax=last_ax, fraction=0.026, pad=0.10, shrink=0.55)
-        cbar.set_label(units[var], fontsize=8)
+        # one colorbar per colour scale, on the last column that uses it (|∇h| on the first, so it doesn't stack with |∂z|)
+        for key in dict.fromkeys(k for kind, _, _ in columns for k in panel_keys(kind, var)):
+            pick = min if key == (var, 'h') else max
+            c = pick(c for c, (kind, _, _) in enumerate(columns) if key in panel_keys(kind, var))
+            sm = plt.cm.ScalarMappable(cmap=cmaps[key], norm=norms[key])
+            sm.set_array([])
+            cbar = fig.colorbar(sm, ax=axes[(var, c)], fraction=0.026, pad=0.10, shrink=0.55)
+            cbar.set_label(units[key], fontsize=8)
 
     fig.subplots_adjust(wspace=0.10, hspace=0.15)
     # The only text that varies per frame -- keep the artist, retitle in place.
@@ -648,15 +790,12 @@ def render_frame(frame_idx):
     meshes = _WORKER['meshes']
 
     for var in selected_variables:
-        for _, model_key in model_order:
-            f = faces[model_key][var]
-            surf, south, east = meshes[(var, model_key)]
-            for (mesh, colors), key in (
-                (surf, 'surface'),   # (j, i)
-                (south, 'south'),    # (k, i)
-                (east, 'east'),      # (k, j)
-            ):
-                mesh.set_frame_colors(colors(f[key][frame_idx], var))
+        for c, (kind, mkey, _) in enumerate(columns):
+            # surface (j, i), south (k, i), east (k, j)
+            for (mesh, colors), data, key in zip(meshes[(var, c)],
+                                                 panel_faces(kind, mkey, var, frame_idx),
+                                                 panel_keys(kind, var)):
+                mesh.set_frame_colors(colors(data, key))
 
     _WORKER['suptitle'].set_text(
         f"LLC4320 {REGION_NAME}  —  {format_time(time_values[frame_idx])}")
@@ -754,23 +893,31 @@ def main():
         # 'fork' (Linux default) lets workers share the preloaded `faces` arrays
         # copy-on-write, so we do NOT duplicate the data per worker in RAM.
         ctx = mp.get_context("fork")
-        # Each worker bakes its figure geometry once in the initializer, so a
-        # frame is cheap after that -- hand out big contiguous chunks and keep
-        # the parent out of the loop rather than round-tripping every frame.
-        chunksize = max(1, len(frame_indices) // (n_workers * 4))
+        # Frames are rendered in rounds of FRAMES_PER_WORKER per worker, each round
+        # on a fresh pool: workers exit before copy-on-write growth can add up
+        # (the fork-safe stand-in for max_tasks_per_child). A worker killed by
+        # the OOM killer raises BrokenProcessPool instead of hanging the job.
+        per_round = n_workers * FRAMES_PER_WORKER
         t0 = time.monotonic()
-        with ctx.Pool(processes=n_workers, initializer=_init_worker,
-                      maxtasksperchild=None) as pool:
-            done = 0
-            step = max(1, len(frame_indices) // 20)
-            for _ in pool.imap_unordered(render_frame, frame_indices,
-                                         chunksize=chunksize):
-                done += 1
-                if done % step == 0 or done == len(frame_indices):
-                    rate = done / max(time.monotonic() - t0, 1e-9)
-                    eta = (len(frame_indices) - done) / max(rate, 1e-9)
-                    logger.info(f"  frames done: {done}/{len(frame_indices)} "
-                                f"({rate:.2f} frame/s, ETA {eta / 60:.1f} min)")
+        done = 0
+        step = max(1, len(frame_indices) // 20)
+        for start in range(0, len(frame_indices), per_round):
+            batch = frame_indices[start:start + per_round]
+            chunksize = max(1, len(batch) // (n_workers * 2))
+            with ProcessPoolExecutor(max_workers=min(n_workers, len(batch)), mp_context=ctx,
+                                     initializer=_init_worker) as pool:
+                try:
+                    for _ in pool.map(render_frame, batch, chunksize=chunksize):
+                        done += 1
+                        if done % step == 0 or done == len(frame_indices):
+                            rate = done / max(time.monotonic() - t0, 1e-9)
+                            eta = (len(frame_indices) - done) / max(rate, 1e-9)
+                            logger.info(f"  frames done: {done}/{len(frame_indices)} "
+                                        f"({rate:.2f} frame/s, ETA {eta / 60:.1f} min)")
+                except BrokenProcessPool:
+                    logger.error("A render worker died (most likely OOM-killed). Lower "
+                                 "VIDEO_N_WORKERS or raise --mem, then rerun in fill mode.")
+                    raise
         logger.info(f"Rendering took {(time.monotonic() - t0) / 60:.1f} min")
     else:
         logger.info("All expected frames already exist; skipping rendering.")
@@ -787,14 +934,14 @@ def main():
     # ── Stitch PNGs → MP4 (fast, high quality) ──
     # PNG decode is the bottleneck here, not x264, so thread the decoder too.
     ff_threads = ["-threads", str(n_workers)]
-    mp4_out = f"{path_out}/llc_3D_{n_vars}x{n_models}-full.mp4"
+    mp4_out = f"{path_out}/llc_3D_{TAG}-full.mp4"
     logger.info(f"Encoding MP4 with ffmpeg → {mp4_out}")
     subprocess.run([
         "ffmpeg", "-y",
         *ff_threads,
         "-framerate", str(fps),
         "-i", f"{FRAME_DIR}/frame_%05d.png",
-        # FRAME_DIR is keyed only on n_vars x n_models, so a shorter run can
+        # FRAME_DIR is keyed only on the panel layout, so a shorter run can
         # land in a directory a longer one already filled. Without this the
         # %05d pattern keeps reading past our last frame and silently splices
         # the previous run's leftovers onto the end.
@@ -815,7 +962,7 @@ def main():
     # ── Also produce a GIF (palette method = better quality) ──
     # Read the MP4 rather than the PNG sequence: two more decode passes over
     # ~700 full-size PNGs cost far more than decoding the h264 we just wrote.
-    gif_out = f"{path_out}/llc_3D_{n_vars}x{n_models}-full.gif"
+    gif_out = f"{path_out}/llc_3D_{TAG}-full.gif"
     logger.info(f"Encoding GIF with ffmpeg → {gif_out}")
     palette = f"{FRAME_DIR}/palette.png"
     subprocess.run([

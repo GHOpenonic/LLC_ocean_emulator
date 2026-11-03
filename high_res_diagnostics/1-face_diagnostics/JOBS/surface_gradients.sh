@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH -p pi_abodner
-#SBATCH --job-name=1-face:surface-grads
+#SBATCH --job-name=2026-10-07:1-face:surface-grads-GRAD1vsckpt12
 #SBATCH -N 1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=96
@@ -13,13 +13,17 @@
 set -euo pipefail
 
 # ============== PARAMETERS ==============
-EMULATOR_NAME="${EMULATOR_NAME:-1-face-ckpt4}"
-EMULATOR_PATH="${EMULATOR_PATH:-/orcd/data/abodner/002/cody/inference_patch/1-face/epoch4-ema-quintic-20121014-20121021-25047717/predictions_4d.zarr}"
-I_EXTENT="${I_EXTENT:-2880 3600}"  # start stop (copied to i_g)
-J_EXTENT="${J_EXTENT:-720 1440}"  # start stop (copied to j_g)
-TIME_RANGE="${TIME_RANGE:-0 71}"  # inclusive indices
+# One NAME=PATH per emulator; override with EMULATORS="a=/p/a.zarr b=/p/b.zarr".
+DEFAULT_EMULATORS=(
+  "1-face-ckpt6=/orcd/data/abodner/002/cody/inference_patch/1-face/epoch6-ema-quintic-25162709/predictions.zarr"
+)
+if [[ -n "${EMULATORS:-}" ]]; then read -r -a EMULATOR_LIST <<< "$EMULATORS"; else EMULATOR_LIST=("${DEFAULT_EMULATORS[@]}"); fi
+FACE="${FACE:-4}"  # LLC face of the truth; must match the emulator run
+I_EXTENT="${I_EXTENT:-0 4320}"  # start stop (copied to i_g)
+J_EXTENT="${J_EXTENT:-0 4320}"  # start stop (copied to j_g)
+TIME_RANGE="${TIME_RANGE:-0 167}"  # inclusive indices
 STEPPING="${STEPPING:-18}"
-VARS="${VARS:-Theta}"
+VARS="${VARS:-Theta Salt U V Eta}"
 DEPTH="${DEPTH:-0}"  # k level
 # ========================================
 
@@ -33,11 +37,15 @@ export MPLCONFIGDIR="${TMPDIR:-/tmp}/mplconfig-${SLURM_JOB_ID:-$$}"
 mkdir -p "$MPLCONFIGDIR"
 
 echo "job=${SLURM_JOB_ID:-manual} node=$(hostname) cpus=${SLURM_CPUS_PER_TASK:-?} mem=${SLURM_MEM_PER_NODE:-?}"
-echo "emulator=$EMULATOR_NAME=$EMULATOR_PATH i=[$I_EXTENT) j=[$J_EXTENT) t=[$TIME_RANGE] step=$STEPPING vars=$VARS"
+echo "emulators=${EMULATOR_LIST[*]} face=$FACE i=[$I_EXTENT) j=[$J_EXTENT) t=[$TIME_RANGE] step=$STEPPING vars=$VARS"
+
+EMULATOR_ARGS=()
+for e in "${EMULATOR_LIST[@]}"; do EMULATOR_ARGS+=(--emulator "$e"); done
 
 # shellcheck disable=SC2086
 /home/codycruz/LLC_ocean_emulator/high_res_diagnostics/.venv/bin/python -u /home/codycruz/LLC_ocean_emulator/high_res_diagnostics/1-face_diagnostics/scripts/surface_gradients.py \
-  --emulator "$EMULATOR_NAME=$EMULATOR_PATH" \
+  "${EMULATOR_ARGS[@]}" \
+  --face "$FACE" \
   --i-extent $I_EXTENT \
   --j-extent $J_EXTENT \
   --time-range $TIME_RANGE \

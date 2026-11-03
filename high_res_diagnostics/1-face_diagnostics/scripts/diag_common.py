@@ -2,10 +2,14 @@
 import argparse
 import logging
 import os
+import sys
 
 import numpy as np
 import pandas as pd
 import xarray as xr
+
+sys.path.insert(0, '/home/codycruz/LLC_ocean_emulator/high_res_diagnostics')
+from predictions_io import open_predictions
 
 logging.getLogger('matplotlib.font_manager').setLevel(logging.ERROR)
 
@@ -18,6 +22,7 @@ def base_parser(description):
     p = argparse.ArgumentParser(description=description)
     p.add_argument('--emulator', action='append', required=True, metavar='NAME=PATH',
                    help='repeat for several emulators')
+    p.add_argument('--face', type=int, default=1, help='LLC face of the truth (must match the emulator run)')
     p.add_argument('--i-extent', type=int, nargs=2, required=True, metavar=('START', 'STOP'))
     p.add_argument('--j-extent', type=int, nargs=2, required=True, metavar=('START', 'STOP'))
     p.add_argument('--time-range', type=int, nargs=2, required=True, metavar=('START', 'END'),
@@ -41,7 +46,7 @@ def out_dir(args, subdir):
         d = args.out_dir
     else:
         names = '+'.join(spec.split('=', 1)[0] for spec in args.emulator)
-        tag = (f"{names}_i{args.i_extent[0]}-{args.i_extent[1]}_j{args.j_extent[0]}-{args.j_extent[1]}"
+        tag = (f"{names}_f{args.face}_i{args.i_extent[0]}-{args.i_extent[1]}_j{args.j_extent[0]}-{args.j_extent[1]}"
                f"_t{args.time_range[0]}-{args.time_range[1]}s{args.stepping}")
         d = os.path.join(FIG_ROOT, subdir, tag)
     os.makedirs(d, exist_ok=True)
@@ -70,16 +75,13 @@ def format_time(t_val):
 
 
 def load_patches(emulator_configs, i_extent, j_extent, selected_time_range, stepping,
-                 emulator_chunks=None):
-    """Returns (llc_patch, emulator_patches, emulator_info, all_patches).
-
-    emulator_chunks={} opens the emulators dask-backed (store chunking) instead of lazily indexed.
-    """
+                 emulator_chunks=None, face=1):
+    """Returns (llc_patch, emulator_patches, emulator_info, all_patches); emulator_chunks={} makes them dask-backed."""
     # ============== LOAD LLC ==============
     i_g_extent = i_extent
     j_g_extent = j_extent
     llc_patch_full = xr.open_zarr(LLC_STORE, consolidated=False).isel(
-        face=1,
+        face=face,
         i=i_extent,
         i_g=i_g_extent,
         j=j_extent,
@@ -89,10 +91,7 @@ def load_patches(emulator_configs, i_extent, j_extent, selected_time_range, step
     # ============== OPEN EMULATOR DATASETS ==============
     emulator_patches_raw = {}
     for cfg in emulator_configs:
-        if emulator_chunks is None:
-            emu_ds = xr.open_dataset(cfg['path'], consolidated=True)
-        else:
-            emu_ds = xr.open_zarr(cfg['path'], consolidated=True, chunks=emulator_chunks)
+        emu_ds = open_predictions(cfg['path'], chunks=emulator_chunks)
         dim_mapping = {}
         if 'lat' in emu_ds.dims and 'j' not in emu_ds.dims:
             dim_mapping['lat'] = 'j'

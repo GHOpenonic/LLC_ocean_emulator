@@ -1,12 +1,12 @@
 #!/bin/bash
 #SBATCH -p pi_abodner
-#SBATCH --job-name=1-face-3D-video
+#SBATCH --job-name=2026-11-01:1-face-3D-full-ckpt17
 #SBATCH -N 1
 #SBATCH --ntasks-per-node=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=100
-#SBATCH --mem=300G
-#SBATCH --time=00-9:00:00
+#SBATCH --mem=360G
+#SBATCH --time=00-10:00:00
 #SBATCH -o /home/codycruz/LLC_ocean_emulator/high_res_diagnostics/videos/logs/%x-%j.out
 #SBATCH -e /home/codycruz/LLC_ocean_emulator/high_res_diagnostics/videos/logs/%x-%j.out
 #SBATCH --nodelist node4006,node4005
@@ -15,13 +15,16 @@
 set -euo pipefail
 
 # ============== PARAMETERS ==============
-export VIDEO_EMULATOR_NAME="${VIDEO_EMULATOR_NAME:-1-face-ckpt4}"
-export VIDEO_EMULATOR_PATH="${VIDEO_EMULATOR_PATH:-/orcd/data/abodner/002/cody/inference_patch/1-face/epoch4-ema-quintic-20121014-20121021-25047717/predictions_4d.zarr}"
-export VIDEO_I_EXTENT="${VIDEO_I_EXTENT:-2880 3600}"  # start stop (copied to i_g)
-export VIDEO_J_EXTENT="${VIDEO_J_EXTENT:-720 1440}"  # start stop (copied to j_g)
-export VIDEO_TIME_RANGE="${VIDEO_TIME_RANGE:-0 71}"  # inclusive indices
-export VIDEO_STEPPING="${VIDEO_STEPPING:-1}"
-export VIDEO_VARS="${VIDEO_VARS:-Salt}"  # rows, e.g. "Theta Salt U V"
+export VIDEO_EMULATOR_NAME="${VIDEO_EMULATOR_NAME:-1-face-ckpt17}"
+export VIDEO_EMULATOR_PATH="${VIDEO_EMULATOR_PATH:-\
+/orcd/scratch/seedfund/001/llc_emulator/inference/1face//epoch17-ema/predictions.zarr}"
+export VIDEO_I_EXTENT="${VIDEO_I_EXTENT:-0 4320}"  # start stop (copied to i_g) # agulhas 2880 3600
+export VIDEO_J_EXTENT="${VIDEO_J_EXTENT:-0 4320}"  # start stop (copied to j_g) # agulhas 720 1440
+export VIDEO_TIME_RANGE="${VIDEO_TIME_RANGE:-0 744}"  # inclusive indices
+export VIDEO_STEPPING="${VIDEO_STEPPING:-4}"
+export VIDEO_VARS="${VIDEO_VARS:-Theta}"  # rows, e.g. "Theta Salt U V"
+export VIDEO_GRADIENTS="${VIDEO_GRADIENTS:-0}"  # 1 = add gradient panel after each model (|∇h| top, |∂z| walls)
+export VIDEO_ERRORS="${VIDEO_ERRORS:-0}"  # 1 = add emulator - llc panel at the end of each row
 export VIDEO_REGION_NAME="${VIDEO_REGION_NAME:-1-face i[$VIDEO_I_EXTENT) j[$VIDEO_J_EXTENT)}"  # frame title
 # ========================================
 
@@ -73,6 +76,10 @@ export NUMEXPR_NUM_THREADS=1
 # that is pure RSS inflation.
 export MALLOC_ARENA_MAX=2
 
+# Render workers. 100 x the per-worker footprint overran --mem=300G (OOM kills
+# left the pool waiting forever); 40 fits with headroom.
+export VIDEO_N_WORKERS="${VIDEO_N_WORKERS:-40}"
+
 # Matplotlib's font cache lives in $HOME by default. 100 processes stat-ing
 # (and racing to rebuild) it on a shared filesystem is a slow, flaky start;
 # give this job its own cache on node-local scratch instead.
@@ -83,7 +90,7 @@ mkdir -p "$MPLCONFIGDIR"
 # activate virtual environment
 source /home/codycruz/Ocean_Emulator/.venv/bin/activate
 
-echo "======== create video (3D, ${SLURM_CPUS_PER_TASK:-?} workers) ========"
+echo "======== create video (3D, ${VIDEO_N_WORKERS} render workers) ========"
 
 echo "SLURM_JOB_ID=$SLURM_JOB_ID"
 echo "NODE=$(hostname)"

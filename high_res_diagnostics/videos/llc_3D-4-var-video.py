@@ -1,7 +1,10 @@
 # dependencies
 import numpy as np
 import pandas as pd
+import sys
 import xarray as xr
+sys.path.insert(0, '/home/codycruz/LLC_ocean_emulator/high_res_diagnostics')
+from predictions_io import open_predictions
 import zarr
 import dask
 import matplotlib.pyplot as plt
@@ -48,13 +51,13 @@ emulator_configs = [
     {
         'name': 'rb-pred-resid-eager-ckpt-40',
         'key': 'emulator_1',
-        'path': '/orcd/data/abodner/002/cody/inference_patch/2026-07-15-eval:Samudra_LLC:rb-Agulhas-pred_resid-reg-ckpt40-17993072/predictions_4d.zarr',
+        'path': '/orcd/data/abodner/002/cody/inference_patch/2026-07-15-eval:Samudra_LLC:rb-Agulhas-pred_resid-reg-ckpt40-17993072/predictions.zarr',
         'desc': ''
     },
     # {
     #     'name': 'rb-pred-resid-reg-ckpt-25',
     #     'key': 'emulator_2',
-    #     'path': '/orcd/data/abodner/002/cody/inference_patch/2026-07-13-eval:Samudra_LLC:rb-Agulhas-pred_resid-reg-ckpt25-17850330/predictions_4d.zarr',
+    #     'path': '/orcd/data/abodner/002/cody/inference_patch/2026-07-13-eval:Samudra_LLC:rb-Agulhas-pred_resid-reg-ckpt25-17850330/predictions.zarr',
     #     'desc': ''
     # },
 ]
@@ -62,7 +65,7 @@ emulator_configs = [
 # ============== OPEN EMULATOR DATASETS ==============
 emulator_patches_raw = {}
 for cfg in emulator_configs:
-    emulator_patches_raw[cfg['key']] = xr.open_dataset(cfg['path'], consolidated=True)
+    emulator_patches_raw[cfg['key']] = open_predictions(cfg['path'])
     print(f"Loaded {cfg['name']}: {cfg['desc']}")
 
 # ============== TIME MATCHING ==============
@@ -179,7 +182,7 @@ n_models = len(model_order)                             # n = 1 + n_emulators
 
 # ── Variable (row) selection ───────────────────────────────────────
 # options: 'Theta', 'Salt', 'U', 'V'   (default: just Theta)
-selected_variables = ['Theta']
+selected_variables = ['Theta', 'Salt', 'U']
 # e.g. selected_variables = ['Theta', 'Salt', 'U', 'V']
 n_vars = len(selected_variables)
 

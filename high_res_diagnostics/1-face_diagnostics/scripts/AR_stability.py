@@ -17,29 +17,37 @@ p = base_parser(__doc__)
 p.add_argument('--depth-average', type=int, nargs=3, default=[0, 51, 5], metavar=('START', 'STOP', 'STEP'),
                help='row 0: depth-average over these levels')
 p.add_argument('--depth-levels', type=int, nargs='+', default=[0, 10, 25, 50], help='one row per level')
+p.add_argument('--stats', nargs='+', choices=['mean', 'std', 'rmse'], default=['mean', 'std', 'rmse'],
+               help='which figures to compute and plot')
+p.add_argument('--mode', choices=['full', 'column-mean-only', 'surface'], default='full',
+               help='full: k x var grid; column-mean-only / surface: one row, vars stacked vertically')
 args = p.parse_args()
 
 llc_patch, emulator_patches, emulator_info, all_patches = load_patches(
     emulator_configs_from(args), slice(*args.i_extent), slice(*args.j_extent),
-    args.time_range, args.stepping)
+    args.time_range, args.stepping, face=args.face)
 
 DEPTH_AVERAGE = slice(*args.depth_average)
-DEPTH_LEVELS = args.depth_levels
+DEPTH_LEVELS = args.depth_levels if args.mode == 'full' else []
+STACKED = args.mode != 'full'
+STATS = args.stats
 PLOT_VARS = args.vars
 READ_WORKERS = min(32, n_cpus())  # NFS throughput scales with concurrent readers
 
 UNITS = {'Theta': '°C', 'Salt': 'psu', 'U': 'm s$^{-1}$', 'V': 'm s$^{-1}$', 'Eta': 'm'}
 OUT_DIR = out_dir(args, 'AR-stability')
 
-ROW_LABELS = [f"column mean\nk[{DEPTH_AVERAGE.start}:{DEPTH_AVERAGE.stop}"
-              + (f":{DEPTH_AVERAGE.step}]" if DEPTH_AVERAGE.step else "]")] + \
+# Row 0 is the column mean, or k=0 in surface mode.
+_AVG = [0] if args.mode == 'surface' else list(range(*DEPTH_AVERAGE.indices(51)))
+ROW_LABELS = (["surface\nk = 0"] if args.mode == 'surface' else
+              [f"column mean\nk[{DEPTH_AVERAGE.start}:{DEPTH_AVERAGE.stop}"
+               + (f":{DEPTH_AVERAGE.step}]" if DEPTH_AVERAGE.step else "]")]) + \
              [f"k = {k}" for k in DEPTH_LEVELS]
 N_ROWS, N_COLS = len(ROW_LABELS), len(PLOT_VARS)
 SOURCES = [('llc', llc_patch)] + [(k, emulator_patches[k]) for _, k in emulator_info]
 _PATCH = dict(SOURCES)
 
 # Read only the union of levels any row needs, once per time block; a lazy dask graph kept whole columns resident.
-_AVG = list(range(*DEPTH_AVERAGE.indices(51)))
 LEVELS_TO_READ = sorted(set(_AVG) | set(DEPTH_LEVELS))
 _POS = {k: i for i, k in enumerate(LEVELS_TO_READ)}
 _AVG_POS = [_POS[k] for k in _AVG]
@@ -47,8 +55,10 @@ _AVG_POS = [_POS[k] for k in _AVG]
 _rA = np.asarray(llc_patch['rA'].values, dtype='f8')
 AREA_W = _rA / _rA.sum()
 
-_block_bytes = 8 * len(LEVELS_TO_READ) * _rA.size * len(SOURCES) * 4  # x4 for per-row temporaries
-TIME_BLOCK = int(max(1, min(48, mem_budget_bytes() // _block_bytes)))
+_slab_bytes = 8 * len(LEVELS_TO_READ) * _rA.size  # one time step of one source
+_block_bytes = _slab_bytes * len(SOURCES) * 4  # x4 for per-row temporaries
+# Persistence keeps truth's first time step resident.
+TIME_BLOCK = int(max(1, min(48, (mem_budget_bytes() - _slab_bytes) // _block_bytes)))
 print(f"TIME_BLOCK = {TIME_BLOCK}, READ_WORKERS = {READ_WORKERS}")
 
 
@@ -64,6 +74,20 @@ def _wstats(x, ok=None):
         dev = np.where(ok, x - mean[:, None, None], 0.0)
         var = np.where(wsum > 0, (dev ** 2 * w).sum(axis=(-2, -1)) / wsum, np.nan)
     return mean, np.sqrt(var), wsum
+
+
+def _valid_wsum(x, ok):
+    """Area-weight sum of cells valid in both `ok` and x."""
+    return np.where(ok & np.isfinite(x), AREA_W, 0.0).sum(axis=(-2, -1))
+
+
+def _sq_err(x, truth, pos):
+    """Per-cell squared error; squared per level before depth-averaging so opposite-sign errors cannot cancel."""
+    if pos is None:
+        return (x - truth) ** 2
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', RuntimeWarning)
+        return np.nanmean((x[:, pos] - truth[:, pos]) ** 2, axis=1)
 
 
 def _rms(d2):
@@ -119,24 +143,25 @@ try:
             jobs = [(n, var, tsl) for n, _ in SOURCES]
             blocks = {j[0]: b for j, b in _pool.map(_read, jobs)}
             truth = blocks['llc']
+            if i0 == 0:
+                truth0 = truth[:1].copy()  # persistence forecast: hold the first truth state fixed
             for row, pos in rows:
                 valid = np.isfinite(_dmean(truth, pos))
                 for name, _ in SOURCES:
                     x = blocks[name]
                     xbar = _dmean(x, pos)
-                    mean, std, wsum = _wstats(xbar, ok=valid)
-                    _put(('mean', var, row, name), i0, mean)
-                    _put(('std', var, row, name), i0, std)
+                    if 'mean' in STATS or 'std' in STATS:
+                        mean, std, wsum = _wstats(xbar, ok=valid)
+                        _put(('mean', var, row, name), i0, mean)
+                        _put(('std', var, row, name), i0, std)
+                    else:
+                        wsum = _valid_wsum(xbar, valid)
                     _put(('valid_frac', var, row, name), i0, wsum)
-                    if name != 'llc':
-                        # Square per level before depth-averaging so opposite-sign errors cannot cancel.
-                        if pos is None:
-                            d2 = (x - truth) ** 2
-                        else:
-                            with warnings.catch_warnings():
-                                warnings.simplefilter('ignore', RuntimeWarning)
-                                d2 = np.nanmean((x[:, pos] - truth[:, pos]) ** 2, axis=1)
-                        _put(('rmse', var, row, name), i0, _rms(d2))
+                    del xbar
+                    if 'rmse' in STATS and name != 'llc':
+                        _put(('rmse', var, row, name), i0, _rms(_sq_err(x, truth, pos)))
+                if 'rmse' in STATS:
+                    _put(('rmse', var, row, 'persistence'), i0, _rms(_sq_err(truth0, truth, pos)))
             del blocks, truth
             print(f"  {var:6s} t[{tsl.start}:{tsl.stop}] of {N_T}  ({_time.time() - _t0:5.0f}s)", flush=True)
 finally:
@@ -157,49 +182,53 @@ LINE_STYLE = {'llc': dict(color='k', lw=2.0, zorder=5)}
 _PALETTE = plt.rcParams['axes.prop_cycle'].by_key()['color']
 for _i, (_n, _k) in enumerate(emulator_info):
     LINE_STYLE[_k] = dict(color=_PALETTE[_i % len(_PALETTE)], lw=1.3)
-LABEL = {'llc': 'LLC4320 (truth)'}
+LINE_STYLE['persistence'] = dict(color='k', lw=1.5, zorder=4)
+LABEL = {'llc': 'LLC4320 (truth)', 'persistence': 'persistence'}
 LABEL.update({k: n for n, k in emulator_info})
 
 
 def plot_stat(stat, title, fname, ylabel_fmt):
-    """One k x var grid of time series for `stat` in {'mean','std','rmse'}."""
-    last_row = {}  # lowest row with content per column (Eta stops at row 0)
-    for c, var in enumerate(PLOT_VARS):
-        rows = [r for r in range(N_ROWS)
-                if any((stat, var, r, n) in stats
-                       for n, _ in SOURCES if not (stat == 'rmse' and n == 'llc'))]
-        last_row[c] = max(rows) if rows else -1
+    """Time series of `stat` in {'mean','std','rmse'}: a k x var grid, or vars stacked in column-mean-only / surface mode."""
+    names = (['persistence'] + [n for n, _ in SOURCES if n != 'llc']) if stat == 'rmse' else [n for n, _ in SOURCES]
+    # (grid row, grid col, var, stat row) per panel
+    if STACKED:
+        panels = [(c, 0, var, 0) for c, var in enumerate(PLOT_VARS)]
+        nr, nc, size = N_COLS, 1, (7.0, 2.4 * N_COLS)
+    else:
+        panels = [(r, c, var, r) for r in range(N_ROWS) for c, var in enumerate(PLOT_VARS)]
+        nr, nc, size = N_ROWS, N_COLS, (4.2 * N_COLS, 2.7 * N_ROWS)
+    panels = [p for p in panels if any((stat, p[2], p[3], n) in stats for n in names)]
+    last_row = {}  # lowest grid row with content per grid column (Eta stops at row 0)
+    for gr, gc, _, _ in panels:
+        last_row[gc] = max(last_row.get(gc, -1), gr)
 
-    fig, axes = plt.subplots(N_ROWS, N_COLS, figsize=(4.2 * N_COLS, 2.7 * N_ROWS),
-                             squeeze=False, sharex=True)
-    for r in range(N_ROWS):
-        for c, var in enumerate(PLOT_VARS):
-            ax = axes[r][c]
-            drawn = False
-            for name, _ in SOURCES:
-                if stat == 'rmse' and name == 'llc':
-                    continue
-                key = (stat, var, r, name)
-                if key not in stats:
-                    continue
+    fig, axes = plt.subplots(nr, nc, figsize=size, squeeze=False, sharex=True)
+    for ax in axes.flat:
+        ax.axis('off')
+    for gr, gc, var, r in panels:
+        ax = axes[gr][gc]
+        ax.axis('on')
+        for name in names:
+            key = (stat, var, r, name)
+            if key in stats:
                 ax.plot(STEPS, stats[key], label=LABEL[name], **LINE_STYLE[name])
-                drawn = True
-            if not drawn:
-                ax.axis('off')
-                continue
-            if r == 0:
+        ylab = ylabel_fmt.format(u=UNITS.get(var, ''))
+        if STACKED:
+            ax.set_ylabel(f"{var}\n{ylab}", fontsize=9)
+        else:
+            if gr == 0:
                 ax.set_title(var, fontsize=12, fontweight='bold')
-            if c == 0:
-                ax.set_ylabel(f"{ROW_LABELS[r]}\n{ylabel_fmt.format(u=UNITS.get(var, ''))}", fontsize=9)
-            else:
-                ax.set_ylabel(ylabel_fmt.format(u=UNITS.get(var, '')), fontsize=9)
-            if r == last_row[c]:
-                ax.set_xlabel('AR step (hours since rollout start)', fontsize=9)
-            ax.grid(alpha=0.3, lw=0.5)
-            ax.tick_params(labelsize=8)
-    handles, labels = axes[0][0].get_legend_handles_labels()
+            ax.set_ylabel(f"{ROW_LABELS[r]}\n{ylab}" if gc == 0 else ylab, fontsize=9)
+        if gr == last_row[gc]:
+            ax.set_xlabel('AR step (hours since rollout start)', fontsize=9)
+        ax.grid(alpha=0.3, lw=0.5)
+        ax.tick_params(labelsize=8)
+    handles, labels = axes[panels[0][0]][panels[0][1]].get_legend_handles_labels()
     fig.legend(handles, labels, loc='upper center', ncol=len(labels),
                bbox_to_anchor=(0.5, 1.0), frameon=False, fontsize=10)
+    if STACKED:
+        title += f" — {ROW_LABELS[0].replace(chr(10), ' ')}"
+        fname += '_column-mean' if args.mode == 'column-mean-only' else '_surface'
     fig.suptitle(title, fontsize=14, y=1.035)
     fig.tight_layout(rect=[0, 0, 1, 0.99])
     out = f"{OUT_DIR}/{fname}.png"
@@ -208,6 +237,10 @@ def plot_stat(stat, title, fname, ylabel_fmt):
     print(f"saved {out}")
 
 
-plot_stat('mean', 'Domain-mean (area-weighted by rA) vs AR step', 'AR-stability_domain-mean', 'mean [{u}]')
-plot_stat('std', 'Domain standard deviation (area-weighted) vs AR step', 'AR-stability_domain-std', 'std [{u}]')
-plot_stat('rmse', 'RMSE against LLC4320 truth (area-weighted, per-cell) vs AR step', 'AR-stability_rmse', 'RMSE [{u}]')
+FIGURES = {
+    'mean': ('Domain-mean (area-weighted by rA) vs AR step', 'AR-stability_domain-mean', 'mean [{u}]'),
+    'std': ('Domain standard deviation (area-weighted) vs AR step', 'AR-stability_domain-std', 'std [{u}]'),
+    'rmse': ('RMSE against LLC4320 truth (area-weighted, per-cell) vs AR step', 'AR-stability_rmse', 'RMSE [{u}]'),
+}
+for _s in STATS:
+    plot_stat(_s, *FIGURES[_s])

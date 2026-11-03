@@ -14,7 +14,7 @@ args = p.parse_args()
 
 llc_patch, emulator_patches, emulator_info, all_patches = load_patches(
     emulator_configs_from(args), slice(*args.i_extent), slice(*args.j_extent),
-    args.time_range, args.stepping)
+    args.time_range, args.stepping, face=args.face)
 n_emulators = len(emulator_info)
 
 prog_vars = args.vars

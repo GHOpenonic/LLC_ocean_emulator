@@ -24,7 +24,7 @@ if bad:
 
 llc_patch, emulator_patches, emulator_info, all_patches = load_patches(
     emulator_configs_from(args), slice(*args.i_extent), slice(*args.j_extent),
-    args.time_range, args.stepping)
+    args.time_range, args.stepping, face=args.face)
 
 SPECTRA_VARS = args.vars
 OUT_DIR = out_dir(args, 'KE_B/spectra')
@@ -223,7 +223,7 @@ for var in SPECTRA_VARS:
     cbar.ax.tick_params(labelsize=14)
     cbar.set_label(rf'$|\omega|\,k_r\,P$ ({var})', fontsize=14, labelpad=5)
 
-    out = f'{OUT_DIR}/spectra_surface_{var}.png'
+    out = f'{OUT_DIR}/spectra_surface_{var}-2.png'
     plt.savefig(out, dpi=150, bbox_inches='tight')
     plt.close(fig)
     print(f'  ✓ saved {out}')
