@@ -10,7 +10,7 @@ _LEVEL = re.compile(r"^(?P<field>.+)_(?P<level>\d+)$")
 
 
 class _StackedLevels(BackendArray):
-    """(time, k, lat, lon) over per-level (time, lat, lon) variables; reads only the levels asked for."""
+    """(time, k, ...) over per-level (time, ...) variables; reads only the levels asked for."""
 
     def __init__(self, levels):
         self.levels = levels
@@ -22,16 +22,16 @@ class _StackedLevels(BackendArray):
             key, self.shape, indexing.IndexingSupport.BASIC, self._getitem)
 
     def _getitem(self, key):
-        t, k, y, x = key
+        t, k, *rest = key
         picked = range(len(self.levels))[k]
         if isinstance(picked, int):
-            return np.asarray(self.levels[picked][t, y, x])
-        return np.stack([np.asarray(self.levels[i][t, y, x]) for i in picked],
+            return np.asarray(self.levels[picked][(t, *rest)])
+        return np.stack([np.asarray(self.levels[i][(t, *rest)]) for i in picked],
                         axis=0 if isinstance(t, int) else 1)
 
 
 def open_predictions(path, chunks=None):
-    """U, V, Theta, Salt, ... as (time, k, lat, lon) and Eta as (time, lat, lon).
+    """U, V, Theta, Salt, ... as (time, k, [face,] lat, lon) and Eta as (time, [face,] lat, lon).
 
     Lazily indexed by default; chunks={} gives dask arrays with one level per chunk on the store's tiling.
     """
@@ -42,20 +42,19 @@ def open_predictions(path, chunks=None):
         if m:
             levels.setdefault(m["field"], []).append((int(m["level"]), name))
 
+    first = next(iter(levels.values()))
+    dims = flat[first[0][1]].dims  # (time, [face,] lat, lon)
     fields = {}
     for field, pairs in levels.items():
         pairs.sort()
         data = indexing.LazilyIndexedArray(_StackedLevels([flat[n].variable for _, n in pairs]))
-        fields[field] = xr.Variable(("time", "k", "lat", "lon"), data)
+        fields[field] = xr.Variable(("time", "k", *dims[1:]), data)
     for name in flat.data_vars:
         if not _LEVEL.match(str(name)):
             fields[name] = flat[name].variable
 
-    first = next(iter(levels.values()))
-    ds = xr.Dataset(fields, coords={"k": [lev for lev, _ in first], "time": flat.time,
-                                    "lat": flat.lat, "lon": flat.lon})
+    ds = xr.Dataset(fields, coords={"k": [lev for lev, _ in first], **flat.coords})
     ds.attrs.update(flat.attrs)
     if chunks is not None:
-        t, y, x = flat[first[0][1]].encoding["chunks"]
-        ds = ds.chunk({"time": t, "k": 1, "lat": y, "lon": x, **chunks})
+        ds = ds.chunk({**dict(zip(dims, flat[first[0][1]].encoding["chunks"])), "k": 1, **chunks})
     return ds
