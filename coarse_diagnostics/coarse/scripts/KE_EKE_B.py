@@ -35,7 +35,8 @@ p.add_argument('--y-extent', type=int, nargs=2, default=[0, 270], metavar=('STAR
 p.add_argument('--depth', type=int, default=0, help='k level')
 p.add_argument('--time-range', type=int, nargs=2, default=[0, 743], metavar=('START', 'END'),
                help='plotted times: inclusive indices into the times truth and emulators share')
-p.add_argument('--stepping', type=int, default=48)
+p.add_argument('--map-stepping', type=int, default=186, help='stride of map rows within --time-range')
+p.add_argument('--ts-stepping', type=int, default=1, help='stride of time-series points within --time-range')
 p.add_argument('--mean-range', type=int, nargs=2, default=[0, 743], metavar=('START', 'END'),
                help='EKE time-mean window (inclusive indices, same axis as --time-range)')
 p.add_argument('--mean-stepping', type=int, default=1)
@@ -81,12 +82,13 @@ for name, _ in EMULATORS:
     common = np.intersect1d(common, raw[name].time.values)
 sources = {k: ds.sel(time=common).isel(**SPACE) for k, ds in raw.items()}
 grid = grid.isel(**SPACE).compute()
-plot_t = common[args.time_range[0]:args.time_range[1] + 1:args.stepping]
+window = common[args.time_range[0]:args.time_range[1] + 1]
+map_t, ts_t = window[::args.map_stepping], window[::args.ts_stepping]
 mean_t = common[args.mean_range[0]:args.mean_range[1] + 1:args.mean_stepping]
-HOURS = (plot_t - common[0]) / np.timedelta64(1, 'h')
+HOURS = (ts_t - common[0]) / np.timedelta64(1, 'h')
 SP_DIMS = [d for d in ('face', 'y', 'x') if d in grid.rA.dims]
 LABELS = {'llc': 'LLC (truth)', **{name: name for name, _ in EMULATORS}}
-log(f"{len(common)} common times; plotting {len(plot_t)}, EKE mean over {len(mean_t)}; "
+log(f"{len(common)} common times; {len(map_t)} map rows, {len(ts_t)} time-series points, EKE mean over {len(mean_t)}; "
     f"face={args.face} x={args.x_extent} y={args.y_extent} k={args.depth}; {N_CPUS} dask threads")
 
 uv_mean = {}
@@ -97,9 +99,9 @@ if 'EKE' in args.vars:
     log("EKE time means done")
 
 
-def quantity(key, var):
-    """Lazy (time, [face,] y, x) KE, EKE or B at the plotted times."""
-    ds = sources[key].sel(time=plot_t)
+def quantity(key, var, times):
+    """Lazy (time, [face,] y, x) KE, EKE or B at `times`."""
+    ds = sources[key].sel(time=times)
     if var == 'KE':
         q = 0.5 * (ds.U ** 2 + ds.V ** 2)
     elif var == 'EKE':
@@ -112,31 +114,45 @@ def quantity(key, var):
 
 
 tag = (f"{'+'.join(n for n, _ in EMULATORS)}_f{args.face}_x{args.x_extent[0]}-{args.x_extent[1]}"
-       f"_y{args.y_extent[0]}-{args.y_extent[1]}_k{args.depth}_t{args.time_range[0]}-{args.time_range[1]}s{args.stepping}"
+       f"_y{args.y_extent[0]}-{args.y_extent[1]}_k{args.depth}_t{args.time_range[0]}-{args.time_range[1]}map{args.map_stepping}ts{args.ts_stepping}"
        f"_m{args.mean_range[0]}-{args.mean_range[1]}s{args.mean_stepping}")
 OUT_DIR = args.out_dir or f"{OUT_ROOT}/{tag}"
 os.makedirs(OUT_DIR, exist_ok=True)
 
-# ============== TIME SERIES: area-weighted spatial mean per plotted time ==============
+# ============== TIME SERIES: area-weighted mean (top) and RMSE vs truth (bottom) per time ==============
 if 'time_series' in args.mode:
     def area_mean(q):
         w = grid.rA.where(q.notnull())
         return (q * grid.rA).sum(SP_DIMS) / w.sum(SP_DIMS)
 
-    jobs = [(var, key) for var in args.vars for key in sources]
-    series = dict(zip(jobs, dask.compute(*[area_mean(quantity(key, var)) for var, key in jobs])))
+    emu_keys = [name for name, _ in EMULATORS]
+    lazy = {(var, key): quantity(key, var, ts_t) for var in args.vars for key in sources}
+    jobs = {('mean', var, key): area_mean(q) for (var, key), q in lazy.items()}
+    for var in args.vars:
+        truth_q = lazy[(var, 'llc')]
+        for key in emu_keys:
+            jobs[('rmse', var, key)] = np.sqrt(area_mean((lazy[(var, key)] - truth_q) ** 2))
+        # persistence: hold the truth at the first time-series step fixed
+        jobs[('rmse', var, 'persistence')] = np.sqrt(area_mean((truth_q.isel(time=0) - truth_q) ** 2))
+    series = dict(zip(jobs, dask.compute(*jobs.values())))
     log("time series computed")
     palette = plt.rcParams['axes.prop_cycle'].by_key()['color']
+    styles = {'llc': dict(color='k', lw=2.0, zorder=5), 'persistence': dict(color='k', lw=1.5, zorder=4),
+              **{k: dict(color=palette[i % len(palette)], lw=1.3) for i, k in enumerate(emu_keys)}}
+    labels = {**LABELS, 'persistence': 'persistence'}
     for var in args.vars:
-        fig, ax = plt.subplots(figsize=(8, 3.5))
-        for i, key in enumerate(sources):
-            style = dict(color='k', lw=2.0, zorder=5) if key == 'llc' else dict(color=palette[(i - 1) % len(palette)], lw=1.3)
-            ax.plot(HOURS, series[(var, key)].values, label=LABELS[key], **style)
-        ax.set_xlabel('hours since rollout start', fontsize=9)
-        ax.set_ylabel(f'area-mean {var} [{UNITS[var]}]', fontsize=9)
-        ax.set_title(f'{var} k={args.depth} area mean (face {args.face})', fontsize=11)
-        ax.grid(alpha=0.3, lw=0.5)
-        ax.legend(fontsize=8, frameon=False)
+        fig, (ax_m, ax_e) = plt.subplots(2, 1, figsize=(8, 6), sharex=True)
+        for key in sources:
+            ax_m.plot(HOURS, series[('mean', var, key)].values, label=labels[key], **styles[key])
+        for key in ['persistence', *emu_keys]:
+            ax_e.plot(HOURS, series[('rmse', var, key)].values, label=labels[key], **styles[key])
+        ax_m.set_ylabel(f'area-mean {var} [{UNITS[var]}]', fontsize=9)
+        ax_e.set_ylabel(f'RMSE vs truth [{UNITS[var]}]', fontsize=9)
+        ax_e.set_xlabel('hours since rollout start', fontsize=9)
+        ax_m.set_title(f'{var} k={args.depth} (face {args.face})', fontsize=11)
+        for ax in (ax_m, ax_e):
+            ax.grid(alpha=0.3, lw=0.5)
+            ax.legend(fontsize=8, frameon=False)
         out = f"{OUT_DIR}/time-series_{var}.png"
         fig.savefig(out, dpi=150, bbox_inches='tight')
         plt.close(fig)
@@ -158,14 +174,14 @@ if 'map' in args.mode:
         extent, panel = None, (3.6, 3)
 
     jobs = [(var, key) for var in args.vars for key in sources]
-    fields = dict(zip(jobs, dask.compute(*[quantity(key, var) for var, key in jobs])))
+    fields = dict(zip(jobs, dask.compute(*[quantity(key, var, map_t) for var, key in jobs])))
     log("map fields computed")
     emu_keys = [name for name, _ in EMULATORS]
     ncols = 1 + 2 * len(emu_keys)
     for var in args.vars:
-        fig, axes = plt.subplots(len(plot_t), ncols, figsize=(panel[0] * ncols, panel[1] * len(plot_t)),
+        fig, axes = plt.subplots(len(map_t), ncols, figsize=(panel[0] * ncols, panel[1] * len(map_t)),
                                  dpi=150, squeeze=False)
-        for row, t in enumerate(plot_t):
+        for row, t in enumerate(map_t):
             time_str = pd.Timestamp(t).strftime('%d/%m/%Y:%Hh')
             planes = {key: to_plane(fields[(var, key)].values[row]) for key in sources}
             errors = {key: planes[key] - planes['llc'] for key in emu_keys}
@@ -182,7 +198,7 @@ if 'map' in args.mode:
                 ax.tick_params(labelsize=7)
                 if GLOBE:
                     ax.set_ylabel('Latitude', fontsize=7)
-                    if row == len(plot_t) - 1:
+                    if row == len(map_t) - 1:
                         ax.set_xlabel('Longitude', fontsize=7)
                 if col == len(sources) - 1:
                     fig.colorbar(im, ax=axes[row, :len(sources)], pad=0.01, fraction=0.03, label=f'{var} [{UNITS[var]}]')

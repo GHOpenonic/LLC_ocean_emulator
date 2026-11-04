@@ -1,12 +1,11 @@
 #!/bin/bash
 #SBATCH -p pi_abodner
-#SBATCH --job-name=2026-11-03:coarse:KE_EKE_B-w384-ckpt48
+#SBATCH --job-name=2026-11-03:coarse:KE_EKE_B-w384-ckpt48-global
 #SBATCH -N 1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=32
 #SBATCH --mem=200G
 #SBATCH --time=00-06:00:00
-#SBATCH --exclude=node2905
 #SBATCH -o /home/codycruz/LLC_ocean_emulator/coarse_diagnostics/coarse/logs/%x-%j.out
 #SBATCH -e /home/codycruz/LLC_ocean_emulator/coarse_diagnostics/coarse/logs/%x-%j.out
 
@@ -20,12 +19,13 @@ DEFAULT_EMULATORS=(
 if [[ -n "${EMULATORS:-}" ]]; then read -r -a EMULATOR_LIST <<< "$EMULATORS"; else EMULATOR_LIST=("${DEFAULT_EMULATORS[@]}"); fi
 VARS="${VARS:-KE EKE B}"  # any of: KE EKE B
 MODE="${MODE:-map time_series}"  # map and/or time_series
-FACE="${FACE:-1}"  # 0-12 for one face, all for the globe
+FACE="${FACE:-all}"  # 0-12 for one face, all for the globe
 X_EXTENT="${X_EXTENT:-0 270}"  # start stop, per face
 Y_EXTENT="${Y_EXTENT:-0 270}"  # start stop, per face
 DEPTH="${DEPTH:-0}"  # k level
 TIME_RANGE="${TIME_RANGE:-0 743}"  # plotted times, inclusive indices into the shared truth/emulator times
-STEPPING="${STEPPING:-48}"
+MAP_STEPPING="${MAP_STEPPING:-124}"  # map rows: every Nth time in TIME_RANGE
+TS_STEPPING="${TS_STEPPING:-6}"  # time-series points: every Nth time in TIME_RANGE
 MEAN_RANGE="${MEAN_RANGE:-0 743}"  # EKE time-mean window, inclusive indices
 MEAN_STEPPING="${MEAN_STEPPING:-1}"
 # ========================================
@@ -40,7 +40,7 @@ export MPLCONFIGDIR="${TMPDIR:-/tmp}/mplconfig-${SLURM_JOB_ID:-$$}"
 mkdir -p "$MPLCONFIGDIR"
 
 echo "job=${SLURM_JOB_ID:-manual} node=$(hostname) cpus=${SLURM_CPUS_PER_TASK:-?} mem=${SLURM_MEM_PER_NODE:-?}"
-echo "emulators=${EMULATOR_LIST[*]} vars=$VARS mode=$MODE face=$FACE x=[$X_EXTENT) y=[$Y_EXTENT) k=$DEPTH t=[$TIME_RANGE] step=$STEPPING mean=[$MEAN_RANGE] step=$MEAN_STEPPING"
+echo "emulators=${EMULATOR_LIST[*]} vars=$VARS mode=$MODE face=$FACE x=[$X_EXTENT) y=[$Y_EXTENT) k=$DEPTH t=[$TIME_RANGE] map_step=$MAP_STEPPING ts_step=$TS_STEPPING mean=[$MEAN_RANGE] step=$MEAN_STEPPING"
 
 EMULATOR_ARGS=()
 for e in "${EMULATOR_LIST[@]}"; do EMULATOR_ARGS+=(--emulator "$e"); done
@@ -55,7 +55,8 @@ for e in "${EMULATOR_LIST[@]}"; do EMULATOR_ARGS+=(--emulator "$e"); done
   --y-extent $Y_EXTENT \
   --depth "$DEPTH" \
   --time-range $TIME_RANGE \
-  --stepping "$STEPPING" \
+  --map-stepping "$MAP_STEPPING" \
+  --ts-stepping "$TS_STEPPING" \
   --mean-range $MEAN_RANGE \
   --mean-stepping "$MEAN_STEPPING"
 
