@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH -p pi_abodner
-#SBATCH --job-name=2026-11-01:1-face-3D-full-ckpt17
+#SBATCH --job-name=2026-11-11:1-face-3D-full-ckpt18_2months
 #SBATCH -N 1
 #SBATCH --ntasks-per-node=1
 #SBATCH --ntasks=1
@@ -15,13 +15,13 @@
 set -euo pipefail
 
 # ============== PARAMETERS ==============
-export VIDEO_EMULATOR_NAME="${VIDEO_EMULATOR_NAME:-1-face-ckpt17}"
+export VIDEO_EMULATOR_NAME="${VIDEO_EMULATOR_NAME:-1-face-ckpt18_2months}"
 export VIDEO_EMULATOR_PATH="${VIDEO_EMULATOR_PATH:-\
-/orcd/scratch/seedfund/001/llc_emulator/inference/1face//epoch17-ema/predictions.zarr}"
+/orcd/scratch/seedfund/001/llc_emulator/inference/1face//1_face_epoch18_2months/predictions.zarr}"
 export VIDEO_I_EXTENT="${VIDEO_I_EXTENT:-0 4320}"  # start stop (copied to i_g) # agulhas 2880 3600
 export VIDEO_J_EXTENT="${VIDEO_J_EXTENT:-0 4320}"  # start stop (copied to j_g) # agulhas 720 1440
-export VIDEO_TIME_RANGE="${VIDEO_TIME_RANGE:-0 744}"  # inclusive indices
-export VIDEO_STEPPING="${VIDEO_STEPPING:-4}"
+export VIDEO_TIME_RANGE="${VIDEO_TIME_RANGE:-0 1463}"  # inclusive indices
+export VIDEO_STEPPING="${VIDEO_STEPPING:-16}"
 export VIDEO_VARS="${VIDEO_VARS:-Theta}"  # rows, e.g. "Theta Salt U V"
 export VIDEO_GRADIENTS="${VIDEO_GRADIENTS:-0}"  # 1 = add gradient panel after each model (|∇h| top, |∂z| walls)
 export VIDEO_ERRORS="${VIDEO_ERRORS:-0}"  # 1 = add emulator - llc panel at the end of each row

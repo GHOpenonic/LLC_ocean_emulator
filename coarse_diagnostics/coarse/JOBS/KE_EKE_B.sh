@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH -p pi_abodner
-#SBATCH --job-name=2026-11-03:coarse:KE_EKE_B-w384-ckpt48-global
+#SBATCH --job-name=2026-11-12:coarse:KE_EKE_B_ALLTIME-1month-384vs640
 #SBATCH -N 1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=32
@@ -14,8 +14,11 @@ set -euo pipefail
 # ============== PARAMETERS ==============
 # One NAME=PATH per emulator; override with EMULATORS="a=/p/a.zarr b=/p/b.zarr".
 DEFAULT_EMULATORS=(
-  "w384-ckpt48=/orcd/scratch/seedfund/001/llc_emulator/inference/coarse/w384-ckpt48/predictions.zarr"
+  "w384_3hr_eager_ckpt36=/orcd/scratch/seedfund/001/llc_emulator/inference/coarse//w384-ckpt36-3hr-1month-t12/predictions.zarr"
+  "w640_3hr_eager_ckpt35=/orcd/scratch/seedfund/001/llc_emulator/inference/coarse/w640-ckpt35-3hr-1month-t12/predictions.zarr"
 )
+
+
 if [[ -n "${EMULATORS:-}" ]]; then read -r -a EMULATOR_LIST <<< "$EMULATORS"; else EMULATOR_LIST=("${DEFAULT_EMULATORS[@]}"); fi
 VARS="${VARS:-KE EKE B}"  # any of: KE EKE B
 MODE="${MODE:-map time_series}"  # map and/or time_series
@@ -23,10 +26,10 @@ FACE="${FACE:-all}"  # 0-12 for one face, all for the globe
 X_EXTENT="${X_EXTENT:-0 270}"  # start stop, per face
 Y_EXTENT="${Y_EXTENT:-0 270}"  # start stop, per face
 DEPTH="${DEPTH:-0}"  # k level
-TIME_RANGE="${TIME_RANGE:-0 743}"  # plotted times, inclusive indices into the shared truth/emulator times
-MAP_STEPPING="${MAP_STEPPING:-124}"  # map rows: every Nth time in TIME_RANGE
-TS_STEPPING="${TS_STEPPING:-6}"  # time-series points: every Nth time in TIME_RANGE
-MEAN_RANGE="${MEAN_RANGE:-0 743}"  # EKE time-mean window, inclusive indices
+TIME_RANGE="${TIME_RANGE:-0 248}"  # plotted times, inclusive indices into the shared truth/emulator times
+MAP_STEPPING="${MAP_STEPPING:-61}"  # map rows: every Nth time in TIME_RANGE
+TS_STEPPING="${TS_STEPPING:-1}"  # time-series points: every Nth time in TIME_RANGE
+MEAN_RANGE="${MEAN_RANGE:-0 248}"  # EKE time-mean window, inclusive indices
 MEAN_STEPPING="${MEAN_STEPPING:-1}"
 # ========================================
 

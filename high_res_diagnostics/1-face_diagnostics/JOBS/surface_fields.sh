@@ -1,26 +1,25 @@
 #!/bin/bash
 #SBATCH -p pi_abodner
-#SBATCH --job-name=2026-10-25:face-4:surface-fields-epoch12-oracle-eta-test
+#SBATCH --job-name=2026-11-24:warm_multiscale_face1:ckpt11_shapiro_2m_k=0
 #SBATCH -N 1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=96
 #SBATCH --mem=300G
 #SBATCH --time=00-06:00:00
-#SBATCH --exclude=node2905
 #SBATCH -o /home/codycruz/LLC_ocean_emulator/high_res_diagnostics/1-face_diagnostics/logs/%x-%j.out
 #SBATCH -e /home/codycruz/LLC_ocean_emulator/high_res_diagnostics/1-face_diagnostics/logs/%x-%j.out
 
 set -euo pipefail
 
 # ============== PARAMETERS ==============
-EMULATOR_NAME="${EMULATOR_NAME:-1-face-ckpt12}"
-EMULATOR_PATH="${EMULATOR_PATH:-/orcd/scratch/seedfund/001/llc_emulator/inference/1face//epoch12-ema-quintic-face4/predictions.zarr}"
-FACE="${FACE:-4}"  # LLC face of the truth; must match the emulator run
+EMULATOR_NAME="${EMULATOR_NAME:-shapiro_warm_ckpt11_2m}"
+EMULATOR_PATH="${EMULATOR_PATH:-/orcd/scratch/seedfund/001/llc_emulator/multiscale/2026-11-15:multiscale_llc:face1-warm-lr1.5e-4/ema_ckpt_ep0011_2012-09-14T00_2012-11-14T00/sharp_pred.zarr}"
+FACE="${FACE:-1}"  # LLC face of the truth; must match the emulator run
 I_EXTENT="${I_EXTENT:-0 4320}"  # start stop (copied to i_g)
 J_EXTENT="${J_EXTENT:-0 4320}"  # start stop (copied to j_g)
-TIME_RANGE="${TIME_RANGE:-0 23}"  # inclusive indices
-STEPPING="${STEPPING:-1}"
-VARS="${VARS:-Theta}" # Salt U V Eta}"
+TIME_RANGE="${TIME_RANGE:-0 1488}"  # inclusive indices
+STEPPING="${STEPPING:-93}"
+VARS="${VARS:-Theta Salt Eta U V}" # Salt U V Eta}"
 DEPTH="${DEPTH:-0}"  # k level
 # ========================================
 

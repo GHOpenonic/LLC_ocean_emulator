@@ -14,13 +14,13 @@ set -euo pipefail
 
 # ============== PARAMETERS ==============
 EMULATOR_NAME="${EMULATOR_NAME:-1-face-ckpt12}"
-EMULATOR_PATH="${EMULATOR_PATH:-/orcd/scratch/seedfund/001/llc_emulator/inference/1face/epoch12-ema-quintic/predictions.zarr}"
+EMULATOR_PATH="${EMULATOR_PATH:-/orcd/scratch/seedfund/001/llc_emulator/inference/1face//epoch18-ema-quintic-oracle-x4-w640ep35-all-31d-k0.1/predictions.zarr}"
 FACE="${FACE:-1}"  # LLC face of the truth; must match the emulator run
 I_EXTENT="${I_EXTENT:-2880 3600}"  # start stop (copied to i_g)
 J_EXTENT="${J_EXTENT:-720 1440}"  # start stop (copied to j_g)
-TIME_RANGE="${TIME_RANGE:-168 335}"  # inclusive indices
+TIME_RANGE="${TIME_RANGE:-0 743}"  # inclusive indices
 STEPPING="${STEPPING:-1}"
-VARS="${VARS:-KE}"  # KE and/or B
+VARS="${VARS:-KE B}"  # KE and/or B
 # ========================================
 
 start=$(date +%s)
